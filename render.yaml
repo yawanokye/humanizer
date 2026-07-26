@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: scholarly-humanizer
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: HUMANIZER_PROVIDER
+        value: none
+      - key: HUMANIZER_TIMEOUT_SECONDS
+        value: "180"
+      - key: HUMANIZER_MAX_INPUT_CHARS
+        value: "1200000"
+      - key: HUMANIZER_MAX_UPLOAD_BYTES
+        value: "15728640"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: PROJECTREADY_HUMANIZER_PERPLEXITY_LEVEL
+        value: high
+      - key: PROJECTREADY_HUMANIZER_BURSTINESS_LEVEL
+        value: high
+      - key: PROJECTREADY_HUMANIZER_MAX_WORD_CHANGE_RATIO
+        value: "0.06"
