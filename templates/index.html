@@ -1,1 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scholarly Humanizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Standalone scholarly writing workspace</p>
+      <h1>Scholarly Humanizer</h1>
+      <p class="subtitle">Improve natural scholarly voice while protecting facts, citations, numbers, headings and placeholders.</p>
+    </div>
+    <div id="modelStatus" class="status-pill">Checking refinement service…</div>
+  </header>
 
+  <main class="layout">
+    <section class="workspace card">
+      <div class="section-head">
+        <div><h2>Source text</h2><p>Paste text or upload TXT, MD, DOCX or a text-based PDF.</p></div>
+        <label class="upload-button">Upload document<input id="fileInput" type="file" accept=".txt,.md,.docx,.pdf"></label>
+      </div>
+      <textarea id="sourceText" spellcheck="true" placeholder="Paste a chapter, article section, report or scholarly paragraph here."></textarea>
+      <div class="controls">
+        <label>Humanisation depth
+          <select id="mode">
+            <option value="light">Light, safe local edits</option>
+            <option value="balanced" selected>Balanced, selective refinement</option>
+            <option value="deep">Deep, all eligible sections</option>
+          </select>
+        </label>
+        <label class="check"><input id="useModel" type="checkbox"> Use configured model refinement</label>
+        <button id="analyseBtn" class="secondary">Analyse voice</button>
+        <button id="humanizeBtn" class="primary">Humanize scholarly text</button>
+        <button id="clearBtn" class="ghost">Clear and start new</button>
+      </div>
+      <p id="message" class="message" aria-live="polite"></p>
+    </section>
+
+    <aside class="dashboard card">
+      <div class="section-head compact"><div><h2>Voice dashboard</h2><p>Explainable style indicators</p></div></div>
+      <div class="score-ring" id="scoreRing"><span id="naturalScore">—</span><small>natural scholarly voice</small></div>
+      <div class="concern"><b id="concernScore">—</b> style concern</div>
+      <div class="metric-grid">
+        <div><span id="wordCount">0</span><small>Words</small></div>
+        <div><span id="sentenceCount">0</span><small>Sentences</small></div>
+        <div><span id="highRisk">0</span><small>High concern</small></div>
+        <div><span id="moderateRisk">0</span><small>Moderate</small></div>
+      </div>
+      <div class="legend">
+        <span><i class="dot natural"></i>Natural</span><span><i class="dot low"></i>Low concern</span>
+        <span><i class="dot moderate"></i>Moderate</span><span><i class="dot high"></i>High concern</span>
+      </div>
+      <p class="disclaimer" id="disclaimer">This score evaluates writing patterns, not authorship.</p>
+    </aside>
+
+    <section class="results card full">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="highlight">Colour map</button>
+        <button class="tab" data-tab="revised">Humanized text</button>
+        <button class="tab" data-tab="findings">Detailed findings</button>
+        <button class="tab" data-tab="metrics">Metrics</button>
+      </div>
+      <div id="highlightPanel" class="panel active">
+        <div id="highlightedText" class="document-view empty-state">Analyse text to colour the portions that need attention.</div>
+        <div id="segmentTip" class="segment-tip">Select a coloured sentence to see why it was flagged.</div>
+      </div>
+      <div id="revisedPanel" class="panel">
+        <textarea id="revisedText" placeholder="The protected humanized version will appear here."></textarea>
+        <div class="export-row">
+          <button id="copyBtn" class="secondary">Copy text</button>
+          <button id="docxBtn" class="secondary">Export clean DOCX</button>
+          <button id="annotatedDocxBtn" class="secondary">Export diagnostic DOCX</button>
+          <button id="htmlBtn" class="secondary">Export coloured HTML</button>
+        </div>
+      </div>
+      <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No findings yet.</div></div>
+      <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No metrics yet.</div></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
