@@ -35,15 +35,16 @@ function escapeHtml(value) {
   return d.innerHTML;
 }
 
-function updateDashboard(report) {
+function updateDashboard(report, comparison = null) {
   currentReport = report;
   const ai = Number(report.ai_detection_percentage ?? 0);
-  const natural = Number(report.naturalness_percentage ?? 0);
+  const humanLike = Number(report.human_like_style_percentage ?? (100 - ai));
   const detector = report.ai_detector || {};
 
   if ($('aiScore')) $('aiScore').textContent = `${ai}%`;
-  if ($('naturalScore')) $('naturalScore').textContent = `${natural}%`;
-  if ($('naturalGain') && !report.naturalness_improvement) $('naturalGain').textContent = '';
+  if ($('humanLikeScore')) $('humanLikeScore').textContent = `${humanLike}%`;
+  if (!comparison && $('humanLikeGain')) $('humanLikeGain').textContent = '';
+  if (!comparison && $('aiGain')) $('aiGain').textContent = '';
   if ($('aiVerdict')) $('aiVerdict').textContent = detector.verdict || report.ai_verdict || '—';
   if ($('aiConfidence')) $('aiConfidence').textContent = detector.confidence || report.ai_confidence || '—';
   if ($('aiFraction')) $('aiFraction').textContent = detector.ai_edited_fraction || report.ai_edited_fraction || '—';
@@ -51,7 +52,18 @@ function updateDashboard(report) {
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
   if ($('highRisk')) $('highRisk').textContent = report.high_risk_segments ?? 0;
   if ($('moderateRisk')) $('moderateRisk').textContent = report.moderate_risk_segments ?? 0;
-  if ($('scoreRing')) $('scoreRing').style.background = `conic-gradient(var(--detector) ${ai * 3.6}deg,#dfe8f3 0deg)`;
+  if ($('aiScoreBar')) $('aiScoreBar').style.width = `${Math.max(0, Math.min(100, ai))}%`;
+  if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${Math.max(0, Math.min(100, humanLike))}%`;
+  if (comparison?.ai && $('aiGain')) {
+    const reduction = Number(comparison.ai.reduction ?? 0);
+    $('aiGain').textContent = reduction > 0 ? `▼ ${reduction} points after rewrite` : reduction < 0 ? `▲ ${Math.abs(reduction)} points after rewrite` : 'no change after rewrite';
+    $('aiGain').className = `score-change ai-gain${reduction < 0 ? ' negative' : ''}`;
+  }
+  if (comparison?.humanLike && $('humanLikeGain')) {
+    const gain = Number(comparison.humanLike.gain ?? 0);
+    $('humanLikeGain').textContent = gain > 0 ? `▲ +${gain} points after rewrite` : gain < 0 ? `▼ ${Math.abs(gain)} points after rewrite` : 'no change after rewrite';
+    $('humanLikeGain').className = `score-change humanlike-gain${gain < 0 ? ' negative' : ''}`;
+  }
   if ($('disclaimer')) $('disclaimer').textContent = report.disclaimer || '';
 
   if ($('highlightedText')) {
@@ -141,7 +153,7 @@ function labelize(key) {
 function renderMetrics(metrics) {
   const target = $('metricsTable');
   if (!target) return;
-  const omit = new Set(['repeated_frames']);
+  const omit = new Set(['repeated_frames', 'naturalness_score']);
   const entries = Object.entries(metrics).filter(([k,v]) => !omit.has(k) && (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string'));
   target.className='metrics-table';
   target.innerHTML = entries.map(([k,v]) => `<div class="metric-card"><b>${escapeHtml(String(v))}</b><span>${escapeHtml(labelize(k))}</span></div>`).join('');
@@ -171,19 +183,20 @@ async function humanize() {
     const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1'})});
     const data = await response.json();
     if ($('revisedText')) $('revisedText').value=data.text;
-    updateDashboard(data.report);
+    const aiImprovement = data.ai_signal_improvement || {};
+    const humanLikeImprovement = data.human_like_style_improvement || {
+      before: 100 - Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0),
+      after: 100 - Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0),
+      gain: Number(aiImprovement.reduction ?? 0),
+    };
+    updateDashboard(data.report, {humanLike: humanLikeImprovement, ai: aiImprovement});
     activateTab('revised');
-    const improvement = data.naturalness_improvement || {};
-    const gain = Number(improvement.gain || 0);
-    if ($('naturalGain')) {
-      $('naturalGain').textContent = gain > 0 ? `▲ +${gain} after rewrite` : 'no reduction';
-      $('naturalGain').className = `natural-gain${gain < 0 ? ' negative' : ''}`;
-    }
     const engineNote = data.selected_engine === 'engine2'
-      ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and naturalness checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
+      ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and rewrite-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
       : ' Engine 1 local rewrite completed without an API call.';
-    const scoreNote = ` Naturalness ${Number(improvement.before ?? data.original_report?.naturalness_percentage ?? 0)}% → ${Number(improvement.after ?? data.report?.naturalness_percentage ?? 0)}%.`;
-    setMessage(`Humanisation completed.${engineNote}${scoreNote} The revised text has also been rescored by the AI detector.`, 'success');
+    const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
+    const aiNote = ` AI signal index ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
+    setMessage(`Humanisation completed.${engineNote}${aiNote}${humanLikeNote}`, 'success');
   } catch(e) {
     setMessage(e.message,'error');
   } finally {
@@ -251,8 +264,11 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('revisedText')) $('revisedText').value='';
   currentReport=null;
   if ($('aiScore')) $('aiScore').textContent='—';
-  if ($('naturalScore')) $('naturalScore').textContent='—';
-  if ($('naturalGain')) $('naturalGain').textContent='';
+  if ($('humanLikeScore')) $('humanLikeScore').textContent='—';
+  if ($('humanLikeGain')) $('humanLikeGain').textContent='';
+  if ($('aiGain')) $('aiGain').textContent='';
+  if ($('aiScoreBar')) $('aiScoreBar').style.width='0%';
+  if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width='0%';
   if ($('aiVerdict')) $('aiVerdict').textContent='—';
   if ($('aiConfidence')) $('aiConfidence').textContent='—';
   if ($('aiFraction')) $('aiFraction').textContent='—';
@@ -282,7 +298,7 @@ fetch('/api/status').then(r=>r.json()).then(data=>{
   const opt = $('engine2Option');
   if (opt) {
     opt.disabled = !engine2?.configured;
-    opt.textContent = engine2?.configured ? 'Engine 2, API rewrite' : 'Engine 2, API rewrite (not configured)';
+    opt.textContent = engine2?.configured ? `Engine 2, API rewrite (${engine2.model || engine2.provider || 'configured'})` : 'Engine 2, API rewrite (add OPENAI_API_KEY)';
   }
 }).catch(()=>{
   if ($('modelStatus')) $('modelStatus').textContent='Engine 1 local rewrite active. Engine 2 not configured.';

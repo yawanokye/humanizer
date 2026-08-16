@@ -26,3 +26,20 @@ button,.upload-button{border:0;border-radius:10px;padding:11px 15px;font-weight:
 .signal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.signal-card{border:1px solid var(--line);border-left:6px solid #86efac;border-radius:13px;padding:15px;background:#fff}.signal-card.low{border-left-color:#eab308}.signal-card.moderate{border-left-color:#f97316}.signal-card.high{border-left-color:#dc2626}.signal-card header{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.signal-card header>div{display:flex;align-items:center;gap:9px}.signal-key{display:grid;place-content:center;min-width:28px;height:28px;border-radius:50%;background:#e9f0f9;color:#163a67;font-weight:800}.signal-card h3{margin:0;font-size:16px}.signal-card header strong{white-space:nowrap;font-size:17px}.signal-card header strong small{color:var(--muted);font-size:11px}.signal-card>p{margin:8px 0;color:var(--muted);font-size:13px}.signal-card ul{margin:10px 0 0;padding-left:0;list-style:none}.signal-card li{padding:7px 0;border-top:1px solid #eef2f7;color:#334155;font-size:13px;line-height:1.45}.severity{display:inline-block;min-width:66px;margin-right:7px;padding:2px 7px;border-radius:999px;text-align:center;text-transform:uppercase;font-size:9px;font-weight:800;letter-spacing:.04em;background:#f1f5f9;color:#475569}.severity.moderate{background:#ffedd5;color:#9a3412}.severity.strong{background:#fee2e2;color:#991b1b}.no-signal{font-size:13px;color:#64748b}.detector-explanation{border:1px solid var(--line);border-radius:13px;padding:16px;background:#fbfdff}.detector-explanation h3{margin:0 0 6px}.detector-explanation h3:not(:first-child){margin-top:16px}.detector-explanation p,.detector-explanation ul{color:#475569;font-size:13px;line-height:1.55}.detector-explanation ul{margin-bottom:0}
 @media(max-width:900px){.detector-summary{grid-template-columns:1fr 1fr}}
 @media(max-width:520px){.detector-summary{grid-template-columns:1fr}.detector-meta{grid-template-columns:1fr}.detector-meta .wide{grid-column:auto}}
+
+/* v1.5 complementary AI Signal and Human-like Style meters */
+.score-board{display:grid;gap:12px;margin:16px 0 14px}
+.score-strip{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fbfdff}
+.score-strip-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.score-strip-head span{font-size:13px;font-weight:800;color:#475569}
+.score-strip-head strong{font-size:32px;line-height:1;color:#172033}
+.score-track{height:10px;margin-top:10px;background:#e2e8f0;border-radius:999px;overflow:hidden}
+.score-track i{display:block;height:100%;width:0;border-radius:999px;transition:width .25s ease}
+.detector-score .score-track i{background:#b42318}
+.detector-score .score-strip-head strong{color:#8f1d18}
+.humanlike-score .score-track i{background:#16803c}
+.humanlike-score .score-strip-head strong{color:#137333}
+.score-change{min-height:17px;margin-top:7px;font-size:12px;font-weight:700;color:#137333}
+.ai-gain.negative,.humanlike-gain.negative{color:#b42318}
+
+.score-help{display:block;margin-top:7px;color:var(--muted);font-size:11px;line-height:1.35}
