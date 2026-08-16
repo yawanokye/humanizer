@@ -43,3 +43,7 @@ button,.upload-button{border:0;border-radius:10px;padding:11px 15px;font-weight:
 .ai-gain.negative,.humanlike-gain.negative{color:#b42318}
 
 .score-help{display:block;margin-top:7px;color:var(--muted);font-size:11px;line-height:1.35}
+
+.engine2-setting small{max-width:310px;line-height:1.35;color:var(--muted)}
+.engine2-setting[hidden]{display:none!important}
+#engine2Model{min-width:245px}

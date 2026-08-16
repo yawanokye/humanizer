@@ -180,7 +180,7 @@ async function humanize() {
   if (!text) return setMessage('Add text before humanising.', 'error');
   busy(true, 'Applying protected scholarly refinement…');
   try {
-    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1'})});
+    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'gpt-5.6-terra'})});
     const data = await response.json();
     if ($('revisedText')) $('revisedText').value=data.text;
     const aiImprovement = data.ai_signal_improvement || {};
@@ -250,11 +250,37 @@ async function exportFile(url, annotated, filename) {
 
 const legacyUseModel = $('useModel');
 const engineSelect = $('engine');
-function syncLegacyEngineFlag() {
-  if (legacyUseModel && engineSelect) legacyUseModel.checked = engineSelect.value === 'engine2';
+const engine2ModelSelect = $('engine2Model');
+let engine2Configured = false;
+
+function syncEngineControls() {
+  const usingEngine2 = engineSelect?.value === 'engine2';
+  if (legacyUseModel && engineSelect) legacyUseModel.checked = usingEngine2;
+  const wrap = $('engine2ModelWrap');
+  if (wrap) wrap.hidden = !usingEngine2;
+  if (engine2ModelSelect) engine2ModelSelect.disabled = false;
+  const hint = $('engine2Hint');
+  if (hint && usingEngine2) {
+    hint.textContent = engine2Configured
+      ? 'Engine 2 is configured. Choose Terra for stronger quality or Luna for lower-cost high-volume rewriting.'
+      : 'Engine 2 can be selected, but OPENAI_API_KEY must be added in Render before API rewriting can run.';
+  }
+  try {
+    if (engineSelect) localStorage.setItem('humanizer_engine', engineSelect.value);
+    if (engine2ModelSelect) localStorage.setItem('humanizer_engine2_model', engine2ModelSelect.value);
+  } catch (_) {}
 }
-if (engineSelect) engineSelect.addEventListener('change', syncLegacyEngineFlag);
-syncLegacyEngineFlag();
+
+try {
+  const savedEngine = localStorage.getItem('humanizer_engine');
+  const savedModel = localStorage.getItem('humanizer_engine2_model');
+  if (engineSelect && ['engine1','engine2'].includes(savedEngine)) engineSelect.value = savedEngine;
+  if (engine2ModelSelect && ['gpt-5.6-terra','gpt-5.6-luna'].includes(savedModel)) engine2ModelSelect.value = savedModel;
+} catch (_) {}
+
+if (engineSelect) engineSelect.addEventListener('change', syncEngineControls);
+if (engine2ModelSelect) engine2ModelSelect.addEventListener('change', syncEngineControls);
+syncEngineControls();
 
 $('analyseBtn')?.addEventListener('click',analyse);
 $('humanizeBtn')?.addEventListener('click',humanize);
@@ -295,11 +321,18 @@ document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>
 fetch('/api/status').then(r=>r.json()).then(data=>{
   if ($('modelStatus')) $('modelStatus').textContent=data.model.message;
   const engine2 = data.engines?.engine2;
+  engine2Configured = Boolean(engine2?.configured);
   const opt = $('engine2Option');
   if (opt) {
-    opt.disabled = !engine2?.configured;
-    opt.textContent = engine2?.configured ? `Engine 2, API rewrite (${engine2.model || engine2.provider || 'configured'})` : 'Engine 2, API rewrite (add OPENAI_API_KEY)';
+    // Never disable Engine 2. Configuration status should explain availability, not trap the selector.
+    opt.disabled = false;
+    opt.textContent = engine2Configured ? 'Engine 2, API rewrite' : 'Engine 2, API rewrite, API key required';
   }
+  syncEngineControls();
 }).catch(()=>{
-  if ($('modelStatus')) $('modelStatus').textContent='Engine 1 local rewrite active. Engine 2 not configured.';
+  engine2Configured = false;
+  const opt = $('engine2Option');
+  if (opt) opt.disabled = false;
+  if ($('modelStatus')) $('modelStatus').textContent='Engine 1 active. Engine 2 is selectable but its API configuration could not be verified.';
+  syncEngineControls();
 });
