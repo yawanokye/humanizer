@@ -6,17 +6,23 @@ A FastAPI web application built from the supplied `scholarly_humanizer.py` modul
 
 - Paste text or upload TXT, Markdown, DOCX and text-based PDF files.
 - Overall natural scholarly voice score and style-concern percentage.
+- Category-level concern percentages for Primary Statistical Metrics, Linguistic and N-gram Patterns, Vocabulary and Stylistic Markers, and Semantic and Logic Constraints.
 - Sentence-level colour map with explainable reasons.
-- Protected local humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
+- Engine 1, Local rewrite, protected humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
+- Engine 2, API rewrite, optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
 - Light, balanced and deep modes.
-- Optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
 - Clean DOCX, annotated DOCX and coloured HTML export.
 - Stateless processing. The app does not require a database or persistent disk.
 - Render health check, dynamic port binding, bounded uploads and production security headers.
 
 ## Important interpretation
 
-The dashboard measures formulaic, repetitive, overloaded and rhythmically uniform writing patterns. The percentage is not an AI-detection probability and does not establish who wrote the text.
+The dashboard measures formulaic, repetitive, overloaded, rhythmically uniform and locally checkable logic-risk patterns. The percentages are writing-quality signals, not AI-detection probabilities, and they do not establish who wrote the text. Token-probability and perplexity indicators are local proxies, not direct model log-probability measurements.
+
+## Rewrite engines
+
+- **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. It removes low-risk formulaic phrasing, repeated connectors and some overloaded sentence structures while preserving academic evidence signatures.
+- **Engine 2, API rewrite:** optional API pass. Use it only when `HUMANIZER_PROVIDER`, `HUMANIZER_MODEL`, `HUMANIZER_BASE_URL` and, where required, `HUMANIZER_API_KEY` are configured. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content.
 
 ## Deploy to Render with Blueprint
 
@@ -40,15 +46,15 @@ Use these settings when creating a Web Service without the Blueprint:
 
 The server binds to `0.0.0.0` and uses Render's `PORT` environment variable automatically.
 
-## Model-assisted refinement on Render
+## Engine 2 API rewrite on Render
 
-The default deployment uses deterministic protected refinement:
+The default deployment uses Engine 1 local rewrite:
 
 ```text
 HUMANIZER_PROVIDER=none
 ```
 
-For an OpenAI-compatible service, add these environment variables in Render:
+For Engine 2 using an OpenAI-compatible service, add these environment variables in Render:
 
 ```text
 HUMANIZER_PROVIDER=openai_compatible

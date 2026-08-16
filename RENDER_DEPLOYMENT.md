@@ -9,7 +9,7 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - Put the project files at the repository root.
 - Confirm that `Dockerfile` and `render.yaml` are in the root.
 - Do not upload a real `.env` file or API key to Git.
-- Keep `HUMANIZER_PROVIDER=none` for the first deployment.
+- Keep `HUMANIZER_PROVIDER=none` for the first deployment so Engine 1 local rewrite remains the only active rewrite path.
 
 ## Render settings
 
@@ -27,9 +27,9 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 1. Open the `onrender.com` URL.
 2. Open `/healthz` and confirm a JSON response with `status: ok`.
 3. Paste a short scholarly paragraph and run **Analyse voice**.
-4. Run **Humanize scholarly text** with model refinement disabled.
+4. Run **Humanize scholarly text** with **Engine 1, Local rewrite** selected.
 5. Test TXT and DOCX upload and both DOCX exports.
-6. Add model-provider environment variables only after the local workflow passes.
+6. Add Engine 2 model-provider environment variables only after the Engine 1 workflow passes.
 
 ## Production recommendations
 
@@ -37,5 +37,5 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - Keep one Uvicorn worker on low-memory instances.
 - Scale horizontally for concurrency instead of increasing workers on a small instance.
 - Treat an external model API key as a Render secret.
-- Inform users that text is sent to the configured external model only when model refinement is enabled.
+- Inform users that text is sent to the configured external model only when Engine 2, API rewrite is selected.
 - Use access control before exposing the service to a restricted institutional audience.

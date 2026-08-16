@@ -52,6 +52,14 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bit is against this background that\b", re.I), "against this background,"),
     (re.compile(r"\bthe reason for this is because\b", re.I), "this is because"),
     (re.compile(r"\bof particular importance is the fact that\b", re.I), "importantly,"),
+    (re.compile(r"\bthis study aims to contribute to\b", re.I), "the study contributes to"),
+    (re.compile(r"\bthe study is important in\b", re.I), "the study is useful for"),
+    (re.compile(r"\bit can therefore be said that\b", re.I), "therefore,"),
+    (re.compile(r"\bthe above discussion shows that\b", re.I), "the discussion shows that"),
+    (re.compile(r"\bthe foregoing discussion shows that\b", re.I), "the discussion shows that"),
+    (re.compile(r"\bfrom the foregoing,?\s*\b", re.I), ""),
+    (re.compile(r"\bthis highlights the importance of\b", re.I), "this points to the importance of"),
+    (re.compile(r"\bthis means that\b", re.I), "this suggests that"),
 )
 
 _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
@@ -179,7 +187,7 @@ def scholarly_humanizer_prompt_rules() -> list[str]:
         "Use formal British English, clear discipline-specific wording and moderate lexical variety. Prefer familiar precise words over rare synonyms.",
         "Preserve all verified facts, statistics, dates, citations, references, equations, tables, headings, objectives, questions, hypotheses and bracketed action placeholders.",
         "Keep academic prose free from drafting commentary. Place every unresolved confirmation, missing source, missing evidence or student instruction on its own [ACTION REQUIRED: ...] line immediately after the affected paragraph or sentence.",
-        "Do not add deliberate errors, fragments, spelling variation, false hesitations, casual fillers or artificial drafting artefacts.",
+        "Do not add deliberate errors, typographical mistakes, spelling variation, false hesitations, casual fillers or artificial drafting artefacts. When the surface is too polished, improve rhythm and specificity instead of inserting mistakes.",
         "Do not discuss AI detection or claim that the text is human-authored. The purpose of the pass is natural scholarly quality, evidential integrity and alignment with the researcher's supplied voice.",
     ]
 
@@ -359,6 +367,14 @@ def _replace_preserving_case(text: str, pattern: re.Pattern[str], replacement: s
     return pattern.sub(lambda match: _apply_case(match.group(0), replacement), text)
 
 
+
+
+def _repair_sentence_initial_caps(text: str) -> str:
+    def fix(match: re.Match[str]) -> str:
+        prefix, letter = match.group(1), match.group(2)
+        return prefix + letter.upper()
+    return re.sub(r"(^|[.!?]\s+)([a-z])", fix, text.strip())
+
 def _split_long_semicolon_sentences(paragraph: str) -> str:
     sentences = _SENTENCE_RE.split(paragraph)
     revised: list[str] = []
@@ -376,6 +392,29 @@ def _split_long_semicolon_sentences(paragraph: str) -> str:
                 clean = clean[:1].upper() + clean[1:]
             revised.append(clean + ".")
     return " ".join(item.strip() for item in revised if item.strip())
+
+
+def _soften_repeated_study_openings(paragraph: str) -> str:
+    """Reduce repeated local openings without guessing new evidence."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    if len(sentences) < 3:
+        return paragraph
+    revised: list[str] = []
+    study_openings = 0
+    chapter_openings = 0
+    for sentence in sentences:
+        if re.match(r"^(This study|The study)\b", sentence):
+            study_openings += 1
+            if study_openings == 2:
+                sentence = re.sub(r"^(This study|The study)\b", "The analysis", sentence, count=1)
+            elif study_openings >= 3:
+                sentence = re.sub(r"^(This study|The study)\b", "It", sentence, count=1)
+        elif re.match(r"^(This chapter|The chapter)\b", sentence):
+            chapter_openings += 1
+            if chapter_openings >= 2:
+                sentence = re.sub(r"^(This chapter|The chapter)\b", "The section", sentence, count=1)
+        revised.append(sentence)
+    return " ".join(revised)
 
 
 def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[str, int]) -> str:
@@ -404,11 +443,13 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int]) -> str:
         value = _replace_preserving_case(value, pattern, replacement)
 
     value = _remove_repeated_sentence_connectors(value, connector_seen)
+    value = _soften_repeated_study_openings(value)
     value = _split_long_semicolon_sentences(value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
     value = re.sub(r"([.!?])\s*([A-Z])", r"\1 \2", value)
     value = re.sub(r",\s*,", ",", value)
+    value = _repair_sentence_initial_caps(value)
     return value.strip()
 
 
@@ -537,14 +578,14 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     Modes:
     - off: return text unchanged
     - light: remove legacy artefacts and low-risk generic filler
-    - balanced: protected local refinement plus selective model refinement by caller
-    - deep: protected local refinement plus comprehensive section-batched model refinement by caller
+    - balanced: Engine 1 protected local refinement with stronger formulaic-style cleanup
+    - deep: Engine 1 protected local refinement across every eligible paragraph. Engine 2 may add API refinement when selected by the caller
     """
     original = str(text or "")
     normalised_mode = str(mode or "balanced").strip().lower()
     if normalised_mode in {"off", "none", "disabled", "0", "false"} or not original.strip():
         report = analyse_scholarly_style(original)
-        report.update({"mode": "off", "applied": False, "preservation_passed": True, "preservation_issues": []})
+        report.update({"mode": "off", "engine": "engine1", "label": "Engine 1, Local rewrite", "applied": False, "preservation_passed": True, "preservation_issues": []})
         return original, report
 
     parts = re.split(r"(\n\s*\n)", original)
@@ -582,6 +623,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         report = analyse_scholarly_style(original)
         report.update({
             "mode": normalised_mode,
+            "engine": "engine1",
+            "label": "Engine 1, Local rewrite",
             "applied": False,
             "preservation_passed": False,
             "preservation_issues": issues,
@@ -594,6 +637,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     before_report = analyse_scholarly_style(original)
     report.update({
         "mode": normalised_mode,
+        "engine": "engine1",
+        "label": "Engine 1, Local rewrite",
         "applied": candidate != original,
         "preservation_passed": True,
         "preservation_issues": [],

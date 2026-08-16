@@ -22,8 +22,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.1.0",
-    description="Explainable scholarly-style analysis and preservation-gated refinement.",
+    version="1.2.0",
+    description="Explainable scholarly-style analysis with Engine 1 local rewrite and optional Engine 2 API rewrite.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -34,6 +34,8 @@ class TextRequest(BaseModel):
 
 class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
+    engine: Literal["engine1", "engine2"] = "engine1"
+    # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
 
 
@@ -102,10 +104,12 @@ def healthz() -> dict[str, str]:
 
 @app.get("/api/status")
 def status() -> dict:
+    provider = provider_status()
     return {
         "ok": True,
         "version": app.version,
-        "model": provider_status(),
+        "model": provider,
+        "engines": provider.get("engines", {}),
         "max_input_chars": MAX_INPUT_CHARS,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
@@ -131,17 +135,38 @@ def analyse(payload: TextRequest) -> dict:
 @app.post("/api/humanize")
 def humanize(payload: HumanizeRequest) -> dict:
     original = _validate_size(payload.text)
-    local_text, local_report = humanize_scholarly_text(original, mode=payload.mode)
-    model_report = {"applied": False, "reason": "Model refinement not requested."}
-    revised = local_text
-    if payload.use_model and payload.mode in {"balanced", "deep"}:
-        revised, model_report = refine_with_model(local_text, mode=payload.mode)
+    selected_engine = "engine2" if payload.use_model else payload.engine
+
+    engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
+    engine2_report = {
+        "applied": False,
+        "engine": "engine2",
+        "label": "Engine 2, API rewrite",
+        "reason": "Engine 2 was not selected.",
+    }
+    revised = engine1_text
+
+    if selected_engine == "engine2":
+        if payload.mode in {"balanced", "deep"}:
+            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode)
+        else:
+            engine2_report = {
+                "applied": False,
+                "engine": "engine2",
+                "label": "Engine 2, API rewrite",
+                "reason": "Engine 2 is available only in balanced or deep mode.",
+            }
+
     return {
+        "selected_engine": selected_engine,
         "original_report": dashboard_report(original),
         "text": revised,
         "report": dashboard_report(revised),
-        "local_humanizer": local_report,
-        "model_refiner": model_report,
+        "engine_1": engine1_report,
+        "engine_2": engine2_report,
+        # Backward-compatible response keys.
+        "local_humanizer": engine1_report,
+        "model_refiner": engine2_report,
     }
 
 
