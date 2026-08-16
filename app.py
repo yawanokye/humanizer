@@ -22,7 +22,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.5.0",
+    version="1.6.0",
     description="Nine-signal AI-style detection with complementary Human-like Style scoring, Engine 1 local rewrite and optional Engine 2 API rewrite.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -35,6 +35,7 @@ class TextRequest(BaseModel):
 class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
     engine: Literal["engine1", "engine2"] = "engine1"
+    engine2_model: Literal["gpt-5.6-terra", "gpt-5.6-luna"] = "gpt-5.6-terra"
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
 
@@ -150,7 +151,7 @@ def humanize(payload: HumanizeRequest) -> dict:
 
     if selected_engine == "engine2":
         if payload.mode in {"balanced", "deep"}:
-            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode)
+            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode, model_override=payload.engine2_model)
         else:
             engine2_report = {
                 "applied": False,
@@ -184,6 +185,7 @@ def humanize(payload: HumanizeRequest) -> dict:
 
     return {
         "selected_engine": selected_engine,
+        "selected_engine2_model": payload.engine2_model if selected_engine == "engine2" else None,
         "original_report": original_dashboard,
         "text": revised,
         "report": revised_dashboard,

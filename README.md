@@ -54,6 +54,10 @@ Use these settings when creating a Web Service without the Blueprint:
 
 The server binds to `0.0.0.0` and uses Render's `PORT` environment variable automatically.
 
+## Engine 2 selection and model choice
+
+Engine 2 is always selectable in the browser. The UI no longer disables it when the API key is missing or while the status request is loading. When Engine 2 is selected, a second selector appears for **GPT-5.6 Terra** or **GPT-5.6 Luna**. Terra is the default quality/cost balance; Luna is the lower-cost high-volume option. The chosen model is sent with each humanization request and does not require changing the Render environment variable between runs. If `OPENAI_API_KEY` is missing, the UI keeps Engine 2 selectable but explains that API rewriting cannot run until the secret is configured.
+
 ## Engine 2 API rewrite on Render
 
 The included Render blueprint preconfigures Engine 2 for OpenAI. Engine 1 still works without an API call and remains available from the interface. For Engine 2, supply these environment variables in Render:
@@ -110,4 +114,4 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.5.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.6.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
