@@ -26,6 +26,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertIn(report["ai_verdict"], {"Human", "Likely Human", "Uncertain", "Likely AI", "AI"})
         self.assertGreaterEqual(report["naturalness_percentage"], 0)
         self.assertLessEqual(report["naturalness_percentage"], 100)
+        self.assertEqual(report["human_like_style_percentage"], 100 - report["ai_detection_percentage"])
 
     def test_local_humanizer_preserves_evidence(self) -> None:
         revised, report = humanize_scholarly_text(SAMPLE, "balanced")
@@ -89,7 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.3.1', html)
+        self.assertIn('/static/app.js?v=1.5.0', html)
+        self.assertIn('/static/style.css?v=1.5.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -112,7 +114,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('<h2>AI Detector</h2>', html)
         self.assertIn('id="aiScore"', html)
-        self.assertIn('id="naturalScore"', html)
+        self.assertIn('id="humanLikeScore"', html)
+        self.assertNotIn('>Naturalness<', html)
         self.assertIn('data-tab="detector"', html)
         self.assertIn('renderDetector(detector)', js)
 
@@ -123,12 +126,52 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertGreaterEqual(after, before)
         self.assertEqual(report["naturalness_gain"], after - before)
 
-    def test_naturalness_gain_is_visible_in_frontend(self) -> None:
+
+    def test_humanizer_recomputes_and_can_reduce_ai_signal_index(self) -> None:
+        before = dashboard_report(SAMPLE)
+        revised, _ = humanize_scholarly_text(SAMPLE, "deep")
+        after = dashboard_report(revised)
+        self.assertGreater(after["naturalness_percentage"], before["naturalness_percentage"])
+        self.assertLess(after["ai_detection_percentage"], before["ai_detection_percentage"])
+
+    def test_render_blueprint_preconfigures_engine2_openai(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        render = (root / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("HUMANIZER_PROVIDER\n        value: openai", render)
+        self.assertIn("OPENAI_MODEL\n        value: gpt-5.6-terra", render)
+        self.assertIn("OPENAI_API_KEY\n        sync: false", render)
+
+    def test_frontend_shows_complementary_ai_and_humanlike_meters(self) -> None:
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="naturalGain"', html)
-        self.assertIn('naturalness_improvement', js)
+        self.assertIn('id="aiScoreBar"', html)
+        self.assertIn('id="humanLikeScoreBar"', html)
+        self.assertIn('id="aiGain"', html)
+        self.assertIn('ai_signal_improvement', js)
+
+    def test_humanlike_gain_is_visible_in_frontend(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="humanLikeGain"', html)
+        self.assertIn('human_like_style_improvement', js)
+        self.assertNotIn("$('naturalScore')", js)
+
+    def test_humanize_endpoint_never_lowers_humanlike_style(self) -> None:
+        from app import HumanizeRequest, humanize
+        data = humanize(HumanizeRequest(text=SAMPLE, mode="deep", engine="engine1"))
+        self.assertGreaterEqual(
+            data["report"]["human_like_style_percentage"],
+            data["original_report"]["human_like_style_percentage"],
+        )
+
+    def test_humanlike_style_is_exact_complement_after_humanize(self) -> None:
+        before = dashboard_report(SAMPLE)
+        revised, _ = humanize_scholarly_text(SAMPLE, "deep")
+        after = dashboard_report(revised)
+        self.assertEqual(before["human_like_style_percentage"], 100 - before["ai_detection_percentage"])
+        self.assertEqual(after["human_like_style_percentage"], 100 - after["ai_detection_percentage"])
 
 
 if __name__ == "__main__":
