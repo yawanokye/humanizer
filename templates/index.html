@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.5.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.6.0">
 </head>
 <body>
   <header class="topbar">
@@ -37,6 +37,13 @@
             <option id="engine2Option" value="engine2">Engine 2, API rewrite</option>
           </select>
           <input id="useModel" type="checkbox" hidden aria-hidden="true" tabindex="-1">
+        </label>
+        <label id="engine2ModelWrap" class="engine2-setting" hidden>Engine 2 model
+          <select id="engine2Model">
+            <option value="gpt-5.6-terra" selected>GPT-5.6 Terra, recommended</option>
+            <option value="gpt-5.6-luna">GPT-5.6 Luna, economy</option>
+          </select>
+          <small id="engine2Hint">Select Engine 2 to use the configured OpenAI API key.</small>
         </label>
         <button id="analyseBtn" class="secondary">Detect AI</button>
         <button id="humanizeBtn" class="primary">Humanize scholarly text</button>
@@ -104,6 +111,6 @@
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.5.0"></script>
+  <script src="/static/app.js?v=1.6.0"></script>
 </body>
 </html>
