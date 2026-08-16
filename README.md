@@ -1,13 +1,20 @@
 # Scholarly Humanizer, Render-ready standalone app
 
-A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It improves scholarly naturalness without introducing deliberate mistakes, changing evidence, or claiming to detect authorship.
+A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It combines an explainable nine-signal AI-style detector with protected scholarly rewriting. It does not treat the detector score as proof of authorship.
+
+## AI Detector and naturalness workflow
+
+The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable score, verdict, confidence and estimated AI-edited fraction. Naturalness is shown separately as a writing-quality score rather than being treated as proof of authorship.
+
+The existing humanizer is the naturalness-improvement engine. Engine 1 generates progressively stronger preservation-safe local candidates for Light, Balanced and Deep modes, scores them, and keeps only the best candidate that does not reduce naturalness. Engine 2 applies the same preservation and non-degradation principle to API-refined batches. The interface reports the naturalness score before and after rewriting.
 
 ## Core features
 
 - Paste text or upload TXT, Markdown, DOCX and text-based PDF files.
-- Overall natural scholarly voice score and style-concern percentage.
-- Category-level concern percentages for Primary Statistical Metrics, Linguistic and N-gram Patterns, Vocabulary and Stylistic Markers, and Semantic and Logic Constraints.
-- Sentence-level colour map with explainable reasons.
+- AI Detector as the primary dashboard, with a 0–27 nine-signal score, verdict, confidence and AI-edited fraction estimate.
+- Separate Naturalness score, shown as a writing-quality measure rather than the inverse of the AI score.
+- Nine signal families: perplexity/predictability, burstiness, hedge density, structural tells, specificity, transitions, punctuation, voice/register and rhetorical scaffolding.
+- Sentence-level AI-signal colour map with explainable reasons and category evidence.
 - Engine 1, Local rewrite, protected humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
 - Engine 2, API rewrite, optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
 - Light, balanced and deep modes.
@@ -17,7 +24,7 @@ A FastAPI web application built from the supplied `scholarly_humanizer.py` modul
 
 ## Important interpretation
 
-The dashboard measures formulaic, repetitive, overloaded, rhythmically uniform and locally checkable logic-risk patterns. The percentages are writing-quality signals, not AI-detection probabilities, and they do not establish who wrote the text. Token-probability and perplexity indicators are local proxies, not direct model log-probability measurements.
+The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal score, not a calibrated probability and not proof of authorship. Strong verdicts require corroboration across multiple signal families. Academic prose is calibrated so normal hedging, neutral register, lists and semicolon use do not become strong evidence by themselves.
 
 ## Rewrite engines
 
@@ -54,16 +61,18 @@ The default deployment uses Engine 1 local rewrite:
 HUMANIZER_PROVIDER=none
 ```
 
-For Engine 2 using an OpenAI-compatible service, add these environment variables in Render:
+For Engine 2 using the OpenAI API, add these environment variables in Render:
 
 ```text
-HUMANIZER_PROVIDER=openai_compatible
-HUMANIZER_MODEL=your-model-name
-HUMANIZER_BASE_URL=https://your-provider.example/v1
-HUMANIZER_API_KEY=your-secret-key
+HUMANIZER_PROVIDER=openai
+OPENAI_API_KEY=sk-your-secret-key
+OPENAI_MODEL=gpt-5.6-terra
+OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-Mark `HUMANIZER_API_KEY` as a secret. Do not commit it to the repository.
+Mark `OPENAI_API_KEY` as a secret. Do not commit it to the repository. `OPENAI_MODEL` defaults to `gpt-5.6-terra` if omitted. Use `gpt-5.6-luna` when lower cost and higher-volume processing matter more than maximum rewrite quality. `OPENAI_BASE_URL` is optional because the app defaults to `https://api.openai.com/v1` when `HUMANIZER_PROVIDER=openai`. The official OpenAI path uses the Responses API.
+
+For another OpenAI-compatible provider, the existing `HUMANIZER_MODEL`, `HUMANIZER_BASE_URL`, and `HUMANIZER_API_KEY` variables remain supported.
 
 A locally running Ollama instance on your computer cannot be reached through `localhost` from Render. Ollama must be hosted as a separate reachable service, preferably on Render's private network or another secured server.
 
@@ -103,3 +112,7 @@ On Windows, `start.bat` remains available for local use.
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+### Browser cache after upgrading from the old AI-enabled control
+
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.3.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.

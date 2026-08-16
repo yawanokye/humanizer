@@ -417,7 +417,7 @@ def _soften_repeated_study_openings(paragraph: str) -> str:
     return " ".join(revised)
 
 
-def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[str, int]) -> str:
+def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[str, int], *, max_uses: int = 2) -> str:
     sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
     revised: list[str] = []
     for sentence in sentences:
@@ -427,7 +427,7 @@ def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[st
             connector_seen[key] = connector_seen.get(key, 0) + 1
             # Keep the first two uses in a chapter. Later uses are usually clearer
             # without a generic connector than with a mechanically substituted one.
-            if connector_seen[key] > 2:
+            if connector_seen[key] > max_uses:
                 sentence = sentence[match.end():].lstrip()
                 if sentence[:1].islower():
                     sentence = sentence[:1].upper() + sentence[1:]
@@ -435,16 +435,21 @@ def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[st
     return " ".join(revised)
 
 
-def _refine_paragraph(paragraph: str, connector_seen: dict[str, int]) -> str:
+def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced") -> str:
+    """Refine one paragraph with progressively stronger, meaning-safe edits."""
     value = paragraph.strip()
     for pattern, replacement in _LEGACY_ARTIFACT_PATTERNS:
         value = pattern.sub(replacement, value)
     for pattern, replacement in _SAFE_PHRASE_REPLACEMENTS:
         value = _replace_preserving_case(value, pattern, replacement)
 
-    value = _remove_repeated_sentence_connectors(value, connector_seen)
-    value = _soften_repeated_study_openings(value)
-    value = _split_long_semicolon_sentences(value)
+    if level in {"balanced", "deep"}:
+        value = _remove_repeated_sentence_connectors(
+            value, connector_seen, max_uses=1 if level == "deep" else 2
+        )
+        value = _soften_repeated_study_openings(value)
+        value = _split_long_semicolon_sentences(value)
+
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
     value = re.sub(r"([.!?])\s*([A-Z])", r"\1 \2", value)
@@ -573,76 +578,99 @@ def build_humanizer_batches(text: str, *, max_words: int = 2600) -> list[dict[st
 
 
 def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dict[str, Any]]:
-    """Apply a deterministic, protected scholarly-style refinement pass.
+    """Improve scholarly naturalness with preservation-gated local editing.
 
-    Modes:
-    - off: return text unchanged
-    - light: remove legacy artefacts and low-risk generic filler
-    - balanced: Engine 1 protected local refinement with stronger formulaic-style cleanup
-    - deep: Engine 1 protected local refinement across every eligible paragraph. Engine 2 may add API refinement when selected by the caller
+    Engine 1 is deliberately conservative. It creates progressively stronger
+    rule-based candidates, verifies academic evidence preservation, scores each
+    candidate for naturalness, and keeps only the best non-degrading version.
     """
     original = str(text or "")
     normalised_mode = str(mode or "balanced").strip().lower()
+    before_report = analyse_scholarly_style(original)
+    before_score = int(before_report.get("naturalness_score", 0))
+
     if normalised_mode in {"off", "none", "disabled", "0", "false"} or not original.strip():
-        report = analyse_scholarly_style(original)
-        report.update({"mode": "off", "engine": "engine1", "label": "Engine 1, Local rewrite", "applied": False, "preservation_passed": True, "preservation_issues": []})
-        return original, report
-
-    parts = re.split(r"(\n\s*\n)", original)
-    connector_seen: dict[str, int] = {}
-    output: list[str] = []
-    reference_tail = False
-
-    for part in parts:
-        if not part or re.fullmatch(r"\n\s*\n", part):
-            output.append(part)
-            continue
-        stripped = part.strip()
-        if re.match(r"^#{1,6}\s*(?:References|Bibliography|Source Use Audit|Appendix|Appendices)\b", stripped, re.I):
-            reference_tail = True
-        if reference_tail or _is_protected_block(part):
-            output.append(part)
-            continue
-        refined = _refine_paragraph(part, connector_seen)
-        output.append(refined)
-
-    candidate = "".join(output)
-    candidate = re.sub(r"[ \t]+\n", "\n", candidate)
-    candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
-
-    original_words = max(1, _word_count(original))
-    # Short passages can contain a high proportion of removable filler. Permit a
-    # larger relative change locally while retaining exact evidence signatures.
-    local_change_limit = 0.55 if original_words < 120 else max(0.06, min(0.40, 40 / original_words))
-    valid, issues = validate_humanizer_preservation(
-        original,
-        candidate,
-        max_word_change_ratio=local_change_limit,
-    )
-    if not valid:
-        report = analyse_scholarly_style(original)
+        report = dict(before_report)
         report.update({
-            "mode": normalised_mode,
-            "engine": "engine1",
-            "label": "Engine 1, Local rewrite",
-            "applied": False,
-            "preservation_passed": False,
-            "preservation_issues": issues,
-            "score_before": report.get("score", 0),
-            "score_after": report.get("score", 0),
+            "mode": "off", "engine": "engine1", "label": "Engine 1, Local rewrite",
+            "applied": False, "preservation_passed": True, "preservation_issues": [],
+            "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
         })
         return original, report
 
-    report = analyse_scholarly_style(candidate)
-    before_report = analyse_scholarly_style(original)
+    allowed_levels = {
+        "light": ["light"],
+        "balanced": ["light", "balanced"],
+        "deep": ["light", "balanced", "deep"],
+    }.get(normalised_mode, ["light", "balanced"])
+
+    original_words = max(1, _word_count(original))
+    local_change_limit = 0.55 if original_words < 120 else max(0.06, min(0.40, 40 / original_words))
+    candidates: list[tuple[int, str, str, dict[str, Any]]] = []
+    preservation_failures: list[str] = []
+
+    for level in allowed_levels:
+        parts = re.split(r"(\n\s*\n)", original)
+        connector_seen: dict[str, int] = {}
+        output: list[str] = []
+        reference_tail = False
+        for part in parts:
+            if not part or re.fullmatch(r"\n\s*\n", part):
+                output.append(part)
+                continue
+            stripped = part.strip()
+            if re.match(r"^#{1,6}\s*(?:References|Bibliography|Source Use Audit|Appendix|Appendices)\b", stripped, re.I):
+                reference_tail = True
+            if reference_tail or _is_protected_block(part):
+                output.append(part)
+                continue
+            output.append(_refine_paragraph(part, connector_seen, level=level))
+
+        candidate = "".join(output)
+        candidate = re.sub(r"[ \t]+\n", "\n", candidate)
+        candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
+        valid, issues = validate_humanizer_preservation(
+            original, candidate, max_word_change_ratio=local_change_limit
+        )
+        if not valid:
+            preservation_failures.extend(issues)
+            continue
+        candidate_report = analyse_scholarly_style(candidate)
+        score = int(candidate_report.get("naturalness_score", 0))
+        candidates.append((score, level, candidate, candidate_report))
+
+    if not candidates:
+        report = dict(before_report)
+        report.update({
+            "mode": normalised_mode, "engine": "engine1", "label": "Engine 1, Local rewrite",
+            "applied": False, "preservation_passed": False,
+            "preservation_issues": sorted(set(preservation_failures)),
+            "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
+            "reason": "No local candidate passed the preservation checks.",
+        })
+        return original, report
+
+    # Prefer the highest naturalness score. For a tie, prefer the lighter pass.
+    level_rank = {"light": 0, "balanced": 1, "deep": 2}
+    candidates.sort(key=lambda item: (-item[0], level_rank.get(item[1], 9)))
+    best_score, best_level, best_text, best_report = candidates[0]
+
+    if best_score < before_score:
+        report = dict(before_report)
+        report.update({
+            "mode": normalised_mode, "engine": "engine1", "label": "Engine 1, Local rewrite",
+            "applied": False, "preservation_passed": True, "preservation_issues": [],
+            "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
+            "reason": "Candidate was rejected because it reduced the naturalness score.",
+        })
+        return original, report
+
+    report = dict(best_report)
     report.update({
-        "mode": normalised_mode,
-        "engine": "engine1",
-        "label": "Engine 1, Local rewrite",
-        "applied": candidate != original,
-        "preservation_passed": True,
-        "preservation_issues": [],
-        "score_before": before_report.get("score", 0),
-        "score_after": report.get("score", 0),
+        "mode": normalised_mode, "applied_level": best_level, "engine": "engine1",
+        "label": "Engine 1, Local rewrite", "applied": best_text != original,
+        "preservation_passed": True, "preservation_issues": [],
+        "score_before": before_score, "score_after": best_score,
+        "naturalness_gain": best_score - before_score,
     })
-    return candidate, report
+    return best_text, report

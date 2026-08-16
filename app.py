@@ -22,8 +22,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.2.0",
-    description="Explainable scholarly-style analysis with Engine 1 local rewrite and optional Engine 2 API rewrite.",
+    version="1.3.1",
+    description="Nine-signal AI-style detection with separate naturalness scoring, Engine 1 local rewrite and optional Engine 2 API rewrite.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -86,8 +86,10 @@ async def add_security_headers(request: Request, call_next):
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     )
-    if request.url.path.startswith("/api/"):
-        response.headers.setdefault("Cache-Control", "no-store")
+    if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
@@ -157,11 +159,31 @@ def humanize(payload: HumanizeRequest) -> dict:
                 "reason": "Engine 2 is available only in balanced or deep mode.",
             }
 
+    original_dashboard = dashboard_report(original)
+    revised_dashboard = dashboard_report(revised)
+    before_naturalness = int(original_dashboard.get("naturalness_percentage", 0))
+    after_naturalness = int(revised_dashboard.get("naturalness_percentage", 0))
+
+    # Final guard: a humanisation request must never return a lower-naturalness
+    # version. Engine 1 already applies this locally and Engine 2 applies it per
+    # batch, but this protects the assembled document as well.
+    if after_naturalness < before_naturalness:
+        revised = original
+        revised_dashboard = original_dashboard
+        after_naturalness = before_naturalness
+        if selected_engine == "engine2":
+            engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because document naturalness decreased."}
+
     return {
         "selected_engine": selected_engine,
-        "original_report": dashboard_report(original),
+        "original_report": original_dashboard,
         "text": revised,
-        "report": dashboard_report(revised),
+        "report": revised_dashboard,
+        "naturalness_improvement": {
+            "before": before_naturalness,
+            "after": after_naturalness,
+            "gain": after_naturalness - before_naturalness,
+        },
         "engine_1": engine1_report,
         "engine_2": engine2_report,
         # Backward-compatible response keys.
@@ -176,7 +198,7 @@ def export_docx(payload: ExportRequest) -> Response:
     if payload.annotated:
         report = dashboard_report(text)
         content = build_annotated_docx(text, report["segments"], payload.title)
-        filename = "scholarly_voice_diagnostic.docx"
+        filename = "ai_signal_diagnostic.docx"
     else:
         content = build_docx(text, payload.title)
         filename = "scholarly_humanized_text.docx"
@@ -193,7 +215,7 @@ def export_html(payload: ExportRequest) -> Response:
     report = dashboard_report(text)
     body = report["highlighted_html"] if payload.annotated else html.escape(text).replace("\n", "<br>")
     legend = (
-        "<div class='legend'><b>Colour key:</b> red = high concern, orange = moderate, "
+        "<div class='legend'><b>AI signal key:</b> red = high signal, orange = moderate, "
         "yellow = low, green = natural.</div>"
         if payload.annotated
         else ""

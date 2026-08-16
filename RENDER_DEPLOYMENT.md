@@ -26,10 +26,10 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 
 1. Open the `onrender.com` URL.
 2. Open `/healthz` and confirm a JSON response with `status: ok`.
-3. Paste a short scholarly paragraph and run **Analyse voice**.
+3. Paste a short scholarly paragraph and run **Detect AI**.
 4. Run **Humanize scholarly text** with **Engine 1, Local rewrite** selected.
 5. Test TXT and DOCX upload and both DOCX exports.
-6. Add Engine 2 model-provider environment variables only after the Engine 1 workflow passes.
+6. Add Engine 2 model-provider environment variables only after the Engine 1 workflow passes. For OpenAI use `HUMANIZER_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. The default is `gpt-5.6-terra`; set `OPENAI_MODEL=gpt-5.6-luna` for the economy/high-volume option. `OPENAI_BASE_URL=https://api.openai.com/v1` is optional.
 
 ## Production recommendations
 
