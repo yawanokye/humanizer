@@ -7,6 +7,7 @@ from typing import Any
 from urllib import error, request
 
 from scholarly_humanizer import (
+    analyse_scholarly_style,
     build_humanizer_batches,
     humanizer_variation_profile,
     scholarly_humanizer_prompt_rules,
@@ -25,12 +26,28 @@ class RefinerConfig:
     @classmethod
     def from_env(cls) -> "RefinerConfig":
         provider = os.getenv("HUMANIZER_PROVIDER", "none").strip().lower()
-        default_url = "http://localhost:11434" if provider == "ollama" else ""
+
+        # Engine 2 supports standard OpenAI environment variables directly.
+        # Generic HUMANIZER_* names remain supported for backward compatibility
+        # and for other OpenAI-compatible providers.
+        if provider == "openai":
+            model = (os.getenv("OPENAI_MODEL") or os.getenv("HUMANIZER_MODEL") or "gpt-5.6-terra").strip()
+            base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("HUMANIZER_API_KEY", "")).strip()
+        elif provider == "ollama":
+            model = os.getenv("HUMANIZER_MODEL", "").strip()
+            base_url = os.getenv("HUMANIZER_BASE_URL", "http://localhost:11434").rstrip("/")
+            api_key = ""
+        else:
+            model = os.getenv("HUMANIZER_MODEL", "").strip()
+            base_url = os.getenv("HUMANIZER_BASE_URL", "").rstrip("/")
+            api_key = os.getenv("HUMANIZER_API_KEY", "").strip()
+
         return cls(
             provider=provider,
-            model=os.getenv("HUMANIZER_MODEL", "").strip(),
-            base_url=os.getenv("HUMANIZER_BASE_URL", default_url).rstrip("/"),
-            api_key=os.getenv("HUMANIZER_API_KEY", "").strip(),
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
             timeout_seconds=int(os.getenv("HUMANIZER_TIMEOUT_SECONDS", "180")),
         )
 
@@ -41,8 +58,12 @@ class RefinerError(RuntimeError):
 
 def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
     cfg = config or RefinerConfig.from_env()
-    configured = cfg.provider in {"ollama", "openai_compatible"} and bool(cfg.model and cfg.base_url)
-    engine_2_message = "Engine 2 API rewrite is configured." if configured else "Engine 2 API rewrite is not configured."
+    configured = (
+        cfg.provider in {"ollama", "openai", "openai_compatible"}
+        and bool(cfg.model and cfg.base_url)
+        and (cfg.provider != "openai" or bool(cfg.api_key))
+    )
+    engine_2_message = (f"Engine 2 API rewrite is configured with {cfg.model}." if configured else "Engine 2 API rewrite is not configured.")
     return {
         "provider": cfg.provider,
         "model": cfg.model,
@@ -89,6 +110,30 @@ def _system_prompt() -> str:
         "You are a preservation-gated scholarly style editor. Improve natural scholarly voice, flow, rhythm, and precision. "
         "Return only the revised passage. Never add analysis or markdown fences.\n\nRules:\n" + rules
     )
+
+
+def _refine_openai(text: str, config: RefinerConfig) -> str:
+    """Refine with OpenAI's Responses API, recommended for GPT-5.6."""
+    payload = {
+        "model": config.model,
+        "reasoning": {"effort": "low"},
+        "instructions": _system_prompt(),
+        "input": "Revise this passage while preserving every fact, number, citation, heading and placeholder exactly:\n\n" + text,
+    }
+    headers = {"Authorization": f"Bearer {config.api_key}"}
+    data = _post_json(f"{config.base_url}/responses", payload, headers, config.timeout_seconds)
+
+    # The raw Responses API returns output items containing output_text content.
+    try:
+        for item in data.get("output", []):
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []):
+                if content.get("type") == "output_text" and content.get("text"):
+                    return str(content["text"]).strip()
+    except (AttributeError, TypeError) as exc:
+        raise RefinerError("OpenAI returned an unexpected Responses API payload.") from exc
+    raise RefinerError("OpenAI returned no text output.")
 
 
 def _refine_openai_compatible(text: str, config: RefinerConfig) -> str:
@@ -150,6 +195,8 @@ def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfi
         try:
             if cfg.provider == "ollama":
                 candidate = _refine_ollama(batch_text, cfg)
+            elif cfg.provider == "openai":
+                candidate = _refine_openai(batch_text, cfg)
             elif cfg.provider == "openai_compatible":
                 candidate = _refine_openai_compatible(batch_text, cfg)
             else:
@@ -157,10 +204,23 @@ def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfi
             valid, issues = validate_humanizer_preservation(batch_text, candidate, max_word_change_ratio=max_ratio)
             if not valid:
                 outputs.append(batch_text)
-                batch_reports.append({"index": index, "applied": False, "score": score, "preservation_issues": issues})
+                batch_reports.append({"index": index, "applied": False, "score_before": score, "score_after": score, "naturalness_gain": 0, "preservation_issues": issues})
             else:
-                outputs.append(candidate)
-                batch_reports.append({"index": index, "applied": candidate != batch_text, "score": score, "preservation_issues": []})
+                candidate_score = int(analyse_scholarly_style(candidate).get("naturalness_score", 0))
+                if candidate_score < score:
+                    outputs.append(batch_text)
+                    batch_reports.append({
+                        "index": index, "applied": False, "score_before": score, "score_after": score,
+                        "naturalness_gain": 0, "preservation_issues": [],
+                        "reason": "API candidate was rejected because it reduced naturalness.",
+                    })
+                else:
+                    outputs.append(candidate)
+                    batch_reports.append({
+                        "index": index, "applied": candidate != batch_text, "score_before": score,
+                        "score_after": candidate_score, "naturalness_gain": candidate_score - score,
+                        "preservation_issues": [],
+                    })
         except RefinerError as exc:
             outputs.append(batch_text)
             batch_reports.append({"index": index, "applied": False, "score": score, "error": str(exc)})

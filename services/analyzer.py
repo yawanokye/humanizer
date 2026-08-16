@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from scholarly_humanizer import analyse_scholarly_style
+from services.ai_detector import ai_check_report, sentence_ai_signal
 
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=(?:[A-Z\[]|\*\*))")
 WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z’'-]*\b")
@@ -482,10 +483,16 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             ))
             continue
 
+        ai_risk, ai_reasons = sentence_ai_signal(clean, academic=True)
+        if ai_risk:
+            risk += ai_risk
+            reasons.extend(ai_reasons)
+
+        # Retain a smaller portion of the earlier scholarly-style diagnostics as supporting evidence.
         for pattern, reason, weight in GENERIC_PATTERNS:
             hits = len(pattern.findall(clean))
             if hits:
-                risk += min(weight + (hits - 1) * 4, weight + 8)
+                risk += min(max(4, weight // 3) + (hits - 1) * 2, 12)
                 reasons.append(reason)
 
         opening = _opening(clean)
@@ -502,14 +509,11 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             reasons.append("Repeated generic connector")
 
         if word_count > 65:
-            risk += 30
-            reasons.append("Overloaded sentence above 65 words")
-        elif word_count > 45:
-            risk += 18
-            reasons.append("Long sentence above 45 words")
+            risk += 8
+            reasons.append("Very long sentence adds to structural regularity review")
         elif word_count < 5 and word_count > 0:
-            risk += 12
-            reasons.append("Very short sentence may be abrupt")
+            risk += 4
+            reasons.append("Very short sentence reviewed for inverted burstiness")
 
         if clean.count(";") >= 2:
             risk += 12
@@ -585,25 +589,36 @@ def build_highlighted_html(text: str, segments: list[dict[str, Any]] | None = No
 def dashboard_report(text: str) -> dict[str, Any]:
     global_report = analyse_scholarly_style(text)
     segments = analyse_segments(text)
-    weighted_total = sum(max(1, _word_count(item["text"])) * item["risk"] for item in segments if not item["protected"])
-    weighted_words = sum(max(1, _word_count(item["text"])) for item in segments if not item["protected"])
-    segment_concern = round(weighted_total / weighted_words) if weighted_words else 0
-    global_concern = 100 - int(global_report.get("naturalness_score", 0))
-    concern_percentage = max(0, min(100, round(global_concern * 0.55 + segment_concern * 0.45)))
+
+    # Naturalness is a writing-quality measure, kept separate from the AI detector.
+    naturalness = max(0, min(100, int(global_report.get("naturalness_score", 0))))
+    style_concern = 100 - naturalness  # legacy API field only
+
+    detector = ai_check_report(text, global_report=global_report, academic=True)
     high_count = sum(1 for item in segments if item["band"] == "high")
     moderate_count = sum(1 for item in segments if item["band"] == "moderate")
-    categories = _build_category_concerns(text, segments, global_report)
+
     return {
-        "naturalness_percentage": 100 - concern_percentage,
-        "style_concern_percentage": concern_percentage,
+        "ai_detection_percentage": detector["ai_detection_percentage"],
+        "ai_detector": detector,
+        "ai_verdict": detector["verdict"],
+        "ai_confidence": detector["confidence"],
+        "ai_score": detector["overall_score"],
+        "ai_score_max": detector["max_score"],
+        "ai_edited_fraction": detector["ai_edited_fraction"],
+        "ai_signal_breakdown": detector["signals"],
+        "naturalness_percentage": naturalness,
+        # Backward-compatible fields for older clients. They are no longer the main dashboard.
+        "style_concern_percentage": style_concern,
+        "style_concern_categories": _build_category_concerns(text, segments, global_report),
         "high_risk_segments": high_count,
         "moderate_risk_segments": moderate_count,
-        "style_concern_categories": categories,
         "segments": segments,
         "highlighted_html": build_highlighted_html(text, segments),
         "metrics": global_report,
         "disclaimer": (
-            "This is an explainable scholarly-style diagnostic. It does not determine authorship "
-            "and it is not an AI-detection probability. Engine 1 works locally; Engine 2 uses the configured API only when selected."
+            "AI Detector screens nine explainable signal families and sentence-level patterns. The percentage is a signal score, "
+            "not a probability or proof of authorship. Scholarly prose is calibrated for legitimate hedging, neutral register, lists and punctuation."
         ),
     }
+

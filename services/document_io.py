@@ -76,13 +76,13 @@ def build_docx(text: str, title: str = "Scholarly Humanized Text") -> bytes:
     return output.getvalue()
 
 
-def build_annotated_docx(text: str, segments: list[dict[str, Any]], title: str = "Scholarly Voice Diagnostic") -> bytes:
+def build_annotated_docx(text: str, segments: list[dict[str, Any]], title: str = "AI Signal Diagnostic") -> bytes:
     document = Document()
     document.core_properties.title = title
     document.add_heading(title, level=0)
     document.add_paragraph(
-        "Colour key: red = high style concern, dark yellow = moderate, yellow = low, uncoloured = natural or protected. "
-        "The diagnostic evaluates writing patterns, not authorship."
+        "AI signal key: red = high signal, dark yellow = moderate, yellow = low, uncoloured = minimal signal or protected. "
+        "The diagnostic estimates AI-like writing patterns and does not prove authorship."
     )
     by_paragraph: dict[int, list[dict[str, Any]]] = {}
     for segment in segments:
@@ -101,7 +101,7 @@ def build_annotated_docx(text: str, segments: list[dict[str, Any]], title: str =
             run.font.size = Pt(11)
             paragraph.add_run(" ")
     document.add_page_break()
-    document.add_heading("Sentence-level findings", level=1)
+    document.add_heading("Sentence-level AI-style evidence", level=1)
     for segment in segments:
         if segment["band"] in {"high", "moderate", "low"}:
             paragraph = document.add_paragraph(style="List Number")
