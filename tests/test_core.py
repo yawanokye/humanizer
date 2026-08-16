@@ -90,8 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.5.0', html)
-        self.assertIn('/static/style.css?v=1.5.0', html)
+        self.assertIn('/static/app.js?v=1.6.0', html)
+        self.assertIn('/static/style.css?v=1.6.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -172,6 +172,28 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         after = dashboard_report(revised)
         self.assertEqual(before["human_like_style_percentage"], 100 - before["ai_detection_percentage"])
         self.assertEqual(after["human_like_style_percentage"], 100 - after["ai_detection_percentage"])
+
+    def test_engine2_option_is_never_disabled_by_configuration_status(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("opt.disabled = !engine2?.configured", js)
+        self.assertIn("opt.disabled = false", js)
+
+    def test_frontend_allows_terra_or_luna_for_engine2(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="engine2Model"', html)
+        self.assertIn('value="gpt-5.6-terra"', html)
+        self.assertIn('value="gpt-5.6-luna"', html)
+        self.assertIn("engine2_model", js)
+
+    def test_humanize_request_accepts_engine2_model_choice(self) -> None:
+        from app import HumanizeRequest
+        terra = HumanizeRequest(text=SAMPLE, engine="engine2", engine2_model="gpt-5.6-terra")
+        luna = HumanizeRequest(text=SAMPLE, engine="engine2", engine2_model="gpt-5.6-luna")
+        self.assertEqual(terra.engine2_model, "gpt-5.6-terra")
+        self.assertEqual(luna.engine2_model, "gpt-5.6-luna")
 
 
 if __name__ == "__main__":
