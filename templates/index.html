@@ -31,7 +31,12 @@
             <option value="deep">Deep, all eligible sections</option>
           </select>
         </label>
-        <label class="check"><input id="useModel" type="checkbox"> Use configured model refinement</label>
+        <label>Rewrite engine
+          <select id="engine">
+            <option value="engine1" selected>Engine 1, Local rewrite</option>
+            <option id="engine2Option" value="engine2">Engine 2, API rewrite</option>
+          </select>
+        </label>
         <button id="analyseBtn" class="secondary">Analyse voice</button>
         <button id="humanizeBtn" class="primary">Humanize scholarly text</button>
         <button id="clearBtn" class="ghost">Clear and start new</button>
@@ -61,6 +66,7 @@
         <button class="tab active" data-tab="highlight">Colour map</button>
         <button class="tab" data-tab="revised">Humanized text</button>
         <button class="tab" data-tab="findings">Detailed findings</button>
+        <button class="tab" data-tab="concerns">Concern categories</button>
         <button class="tab" data-tab="metrics">Metrics</button>
       </div>
       <div id="highlightPanel" class="panel active">
@@ -77,6 +83,7 @@
         </div>
       </div>
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No findings yet.</div></div>
+      <div id="concernsPanel" class="panel"><div id="concernCategories" class="concern-categories empty-state">No category-level style concerns yet.</div></div>
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No metrics yet.</div></div>
     </section>
   </main>
