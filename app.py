@@ -22,8 +22,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.3.1",
-    description="Nine-signal AI-style detection with separate naturalness scoring, Engine 1 local rewrite and optional Engine 2 API rewrite.",
+    version="1.5.0",
+    description="Nine-signal AI-style detection with complementary Human-like Style scoring, Engine 1 local rewrite and optional Engine 2 API rewrite.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -163,16 +163,24 @@ def humanize(payload: HumanizeRequest) -> dict:
     revised_dashboard = dashboard_report(revised)
     before_naturalness = int(original_dashboard.get("naturalness_percentage", 0))
     after_naturalness = int(revised_dashboard.get("naturalness_percentage", 0))
+    before_ai_signal = int(original_dashboard.get("ai_detection_percentage", 0))
+    after_ai_signal = int(revised_dashboard.get("ai_detection_percentage", 0))
+    before_human_like = 100 - before_ai_signal
+    after_human_like = 100 - after_ai_signal
 
-    # Final guard: a humanisation request must never return a lower-naturalness
-    # version. Engine 1 already applies this locally and Engine 2 applies it per
-    # batch, but this protects the assembled document as well.
-    if after_naturalness < before_naturalness:
+    # Final guard: a humanisation request must not degrade either the internal
+    # rewrite-quality metric or the public complementary style profile. Engine 1
+    # and Engine 2 already apply preservation gates, but this protects the fully
+    # assembled document as well.
+    if after_naturalness < before_naturalness or after_ai_signal > before_ai_signal:
         revised = original
         revised_dashboard = original_dashboard
         after_naturalness = before_naturalness
+        after_ai_signal = before_ai_signal
+        before_human_like = 100 - before_ai_signal
+        after_human_like = before_human_like
         if selected_engine == "engine2":
-            engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because document naturalness decreased."}
+            engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because it degraded the protected rewrite-quality or Human-like Style profile."}
 
     return {
         "selected_engine": selected_engine,
@@ -183,6 +191,16 @@ def humanize(payload: HumanizeRequest) -> dict:
             "before": before_naturalness,
             "after": after_naturalness,
             "gain": after_naturalness - before_naturalness,
+        },
+        "ai_signal_improvement": {
+            "before": before_ai_signal,
+            "after": after_ai_signal,
+            "reduction": before_ai_signal - after_ai_signal,
+        },
+        "human_like_style_improvement": {
+            "before": before_human_like,
+            "after": after_human_like,
+            "gain": after_human_like - before_human_like,
         },
         "engine_1": engine1_report,
         "engine_2": engine2_report,

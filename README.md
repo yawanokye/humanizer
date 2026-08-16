@@ -2,17 +2,18 @@
 
 A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It combines an explainable nine-signal AI-style detector with protected scholarly rewriting. It does not treat the detector score as proof of authorship.
 
-## AI Detector and naturalness workflow
+## AI Detector and Human-like Style workflow
 
-The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable score, verdict, confidence and estimated AI-edited fraction. Naturalness is shown separately as a writing-quality score rather than being treated as proof of authorship.
+The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable score, verdict, confidence and estimated AI-edited fraction. The second headline metric is **Human-like Style**, defined exactly as `100 - AI Signal`. This keeps the public scores simple and mathematically consistent without claiming that the tool can prove who wrote the text.
 
-The existing humanizer is the naturalness-improvement engine. Engine 1 generates progressively stronger preservation-safe local candidates for Light, Balanced and Deep modes, scores them, and keeps only the best candidate that does not reduce naturalness. Engine 2 applies the same preservation and non-degradation principle to API-refined batches. The interface reports the naturalness score before and after rewriting.
+The existing humanizer still uses its internal Naturalness metric to choose the best preservation-safe rewrite. Engine 1 generates progressively stronger local candidates for Light, Balanced and Deep modes, then keeps the strongest candidate that does not reduce internal rewrite quality. Deep is the default. Engine 2 applies the same preservation gate to API-refined batches. After rewriting, the visible AI Signal is recalculated from the revised text and Human-like Style is displayed as its exact complement.
 
 ## Core features
 
 - Paste text or upload TXT, Markdown, DOCX and text-based PDF files.
 - AI Detector as the primary dashboard, with a 0–27 nine-signal score, verdict, confidence and AI-edited fraction estimate.
-- Separate Naturalness score, shown as a writing-quality measure rather than the inverse of the AI score.
+- Complementary Human-like Style score, always `100 - AI Signal`.
+- Internal Naturalness scoring remains part of rewrite selection but is not a headline detector metric.
 - Nine signal families: perplexity/predictability, burstiness, hedge density, structural tells, specificity, transitions, punctuation, voice/register and rhetorical scaffolding.
 - Sentence-level AI-signal colour map with explainable reasons and category evidence.
 - Engine 1, Local rewrite, protected humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
@@ -29,7 +30,7 @@ The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, 
 ## Rewrite engines
 
 - **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. It removes low-risk formulaic phrasing, repeated connectors and some overloaded sentence structures while preserving academic evidence signatures.
-- **Engine 2, API rewrite:** optional API pass. Use it only when `HUMANIZER_PROVIDER`, `HUMANIZER_MODEL`, `HUMANIZER_BASE_URL` and, where required, `HUMANIZER_API_KEY` are configured. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content.
+- **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and the official API base URL. Add only the secret `OPENAI_API_KEY` during deployment. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers naturalness.
 
 ## Deploy to Render with Blueprint
 
@@ -55,13 +56,7 @@ The server binds to `0.0.0.0` and uses Render's `PORT` environment variable auto
 
 ## Engine 2 API rewrite on Render
 
-The default deployment uses Engine 1 local rewrite:
-
-```text
-HUMANIZER_PROVIDER=none
-```
-
-For Engine 2 using the OpenAI API, add these environment variables in Render:
+The included Render blueprint preconfigures Engine 2 for OpenAI. Engine 1 still works without an API call and remains available from the interface. For Engine 2, supply these environment variables in Render:
 
 ```text
 HUMANIZER_PROVIDER=openai
@@ -115,4 +110,4 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.3.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.5.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.

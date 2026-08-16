@@ -60,6 +60,17 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bfrom the foregoing,?\s*\b", re.I), ""),
     (re.compile(r"\bthis highlights the importance of\b", re.I), "this points to the importance of"),
     (re.compile(r"\bthis means that\b", re.I), "this suggests that"),
+    (re.compile(r"\bit is clear that\b", re.I), ""),
+    (re.compile(r"\bit is evident that\b", re.I), ""),
+    (re.compile(r"\bit is worth noting that\b", re.I), ""),
+    (re.compile(r"\bit is worth mentioning that\b", re.I), ""),
+    (re.compile(r"\bin the realm of\b", re.I), "in"),
+    (re.compile(r"\ba myriad of\b", re.I), "many"),
+    (re.compile(r"\ba plethora of\b", re.I), "many"),
+    (re.compile(r"\butili[sz]e\b", re.I), "use"),
+    (re.compile(r"\bpivotal role\b", re.I), "central role"),
+    (re.compile(r"\bmultifaceted\b", re.I), "complex"),
+    (re.compile(r"\bthis (?:highlights|underscores|demonstrates) the importance of\b", re.I), "this shows the importance of"),
 )
 
 _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
@@ -82,6 +93,15 @@ _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bneedless to say\b", re.I),
     re.compile(r"\bthe study is important in\b", re.I),
     re.compile(r"\bthe study can show how\b", re.I),
+    re.compile(r"\bit is clear that\b", re.I),
+    re.compile(r"\bit is evident that\b", re.I),
+    re.compile(r"\bit is worth noting\b", re.I),
+    re.compile(r"\bin the realm of\b", re.I),
+    re.compile(r"\ba myriad of\b", re.I),
+    re.compile(r"\ba plethora of\b", re.I),
+    re.compile(r"\butili[sz]e\b", re.I),
+    re.compile(r"\bmultifaceted\b", re.I),
+    re.compile(r"\bthis (?:highlights|underscores|demonstrates) the importance\b", re.I),
 )
 
 _GENERIC_CONNECTOR_RE = re.compile(
@@ -147,8 +167,8 @@ def humanizer_variation_profile() -> dict[str, Any]:
         "short_sentence_ratio_target": 0.10 if burstiness == "high" else 0.06,
         "long_sentence_ratio_target": 0.14 if burstiness == "high" else 0.09,
         "model_word_change_limit": float(
-            os.getenv("PROJECTREADY_HUMANIZER_MAX_WORD_CHANGE_RATIO", "0.06" if high else "0.045")
-            or (0.06 if high else 0.045)
+            os.getenv("PROJECTREADY_HUMANIZER_MAX_WORD_CHANGE_RATIO", "0.18" if high else "0.10")
+            or (0.18 if high else 0.10)
         ),
     }
 
@@ -435,6 +455,36 @@ def _remove_repeated_sentence_connectors(paragraph: str, connector_seen: dict[st
     return " ".join(revised)
 
 
+def _split_long_compound_sentences(paragraph: str) -> str:
+    """Split only long independent-clause joins where the second clause has an explicit subject."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    revised: list[str] = []
+    subject = r"(?:the|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study)"
+    splitter = re.compile(rf",\s+(and|but)\s+(?={subject}\b)", re.I)
+    for sentence in sentences:
+        if _word_count(sentence) < 38:
+            revised.append(sentence)
+            continue
+        match = splitter.search(sentence)
+        if not match:
+            revised.append(sentence)
+            continue
+        left = sentence[:match.start()].rstrip(" ,")
+        right = sentence[match.end():].strip()
+        conjunction = match.group(1).lower()
+        if _word_count(left) < 12 or _word_count(right) < 9:
+            revised.append(sentence)
+            continue
+        if right[:1].islower():
+            right = right[:1].upper() + right[1:]
+        # Preserve contrast when the original used 'but'; plain coordination can
+        # stand as a separate sentence without a mechanical connector.
+        if conjunction == "but":
+            right = "But " + right
+        revised.extend([left.rstrip(".!?") + ".", right])
+    return " ".join(revised)
+
+
 def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced") -> str:
     """Refine one paragraph with progressively stronger, meaning-safe edits."""
     value = paragraph.strip()
@@ -445,10 +495,12 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
 
     if level in {"balanced", "deep"}:
         value = _remove_repeated_sentence_connectors(
-            value, connector_seen, max_uses=1 if level == "deep" else 2
+            value, connector_seen, max_uses=0 if level == "deep" else 1
         )
         value = _soften_repeated_study_openings(value)
         value = _split_long_semicolon_sentences(value)
+        if level == "deep":
+            value = _split_long_compound_sentences(value)
 
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
@@ -605,7 +657,7 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     }.get(normalised_mode, ["light", "balanced"])
 
     original_words = max(1, _word_count(original))
-    local_change_limit = 0.55 if original_words < 120 else max(0.06, min(0.40, 40 / original_words))
+    local_change_limit = 0.60 if original_words < 120 else max(0.12, min(0.45, 70 / original_words))
     candidates: list[tuple[int, str, str, dict[str, Any]]] = []
     preservation_failures: list[str] = []
 

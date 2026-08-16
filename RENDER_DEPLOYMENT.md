@@ -29,7 +29,7 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 3. Paste a short scholarly paragraph and run **Detect AI**.
 4. Run **Humanize scholarly text** with **Engine 1, Local rewrite** selected.
 5. Test TXT and DOCX upload and both DOCX exports.
-6. Add Engine 2 model-provider environment variables only after the Engine 1 workflow passes. For OpenAI use `HUMANIZER_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. The default is `gpt-5.6-terra`; set `OPENAI_MODEL=gpt-5.6-luna` for the economy/high-volume option. `OPENAI_BASE_URL=https://api.openai.com/v1` is optional.
+6. Engine 2 is prewired for OpenAI in `render.yaml`: `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and `OPENAI_BASE_URL=https://api.openai.com/v1`. Render will prompt for the secret `OPENAI_API_KEY` because the blueprint marks it `sync: false`. Set `OPENAI_MODEL=gpt-5.6-luna` only if you prefer the economy/high-volume option.
 
 ## Production recommendations
 
