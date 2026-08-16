@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.3.1">
+  <link rel="stylesheet" href="/static/style.css?v=1.5.0">
 </head>
 <body>
   <header class="topbar">
@@ -27,8 +27,8 @@
         <label>Humanisation depth
           <select id="mode">
             <option value="light">Light, safe local edits</option>
-            <option value="balanced" selected>Balanced, selective refinement</option>
-            <option value="deep">Deep, all eligible sections</option>
+            <option value="balanced">Balanced, strong scholarly refinement</option>
+            <option value="deep" selected>Deep, aggressive naturalness refinement</option>
           </select>
         </label>
         <label>Rewrite engine
@@ -47,8 +47,19 @@
 
     <aside class="dashboard card">
       <div class="section-head compact"><div><h2>AI Detector</h2><p>Nine-signal forensic screening for AI-like writing patterns</p></div></div>
-      <div class="score-ring detector-ring" id="scoreRing"><span id="aiScore">—</span><small>AI signal score</small></div>
-      <div class="concern naturalness-line"><b id="naturalScore">—</b> naturalness <span id="naturalGain" class="natural-gain"></span></div>
+      <div class="score-board">
+        <section class="score-strip detector-score">
+          <div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div>
+          <div class="score-track" aria-hidden="true"><i id="aiScoreBar"></i></div>
+          <div class="score-change" id="aiGain"></div>
+        </section>
+        <section class="score-strip humanlike-score">
+          <div class="score-strip-head"><span>Human-like style</span><strong id="humanLikeScore">—</strong></div>
+          <div class="score-track" aria-hidden="true"><i id="humanLikeScoreBar"></i></div>
+          <div class="score-change humanlike-gain" id="humanLikeGain"></div>
+          <small class="score-help">Exact complement of AI Signal. It describes style patterns, not proven authorship.</small>
+        </section>
+      </div>
       <div class="detector-meta">
         <div><small>Verdict</small><strong id="aiVerdict">—</strong></div>
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
@@ -73,7 +84,7 @@
         <button class="tab" data-tab="highlight">AI sentence map</button>
         <button class="tab" data-tab="revised">Humanized text</button>
         <button class="tab" data-tab="findings">Sentence evidence</button>
-        <button class="tab" data-tab="metrics">Naturalness metrics</button>
+        <button class="tab" data-tab="metrics">Style diagnostics</button>
       </div>
       <div id="detectorPanel" class="panel active"><div id="detectorSignals" class="detector-signals empty-state">Run AI detection to see the nine-signal breakdown.</div></div>
       <div id="highlightPanel" class="panel">
@@ -90,9 +101,9 @@
         </div>
       </div>
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No sentence evidence yet.</div></div>
-      <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No naturalness metrics yet.</div></div>
+      <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.3.1"></script>
+  <script src="/static/app.js?v=1.5.0"></script>
 </body>
 </html>
