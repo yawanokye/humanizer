@@ -18,6 +18,10 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertGreater(report["style_concern_percentage"], 0)
         self.assertTrue(report["segments"])
         self.assertIn("risk-segment", report["highlighted_html"])
+        self.assertIn("style_concern_categories", report)
+        category_names = {item["group"] for item in report["style_concern_categories"]}
+        self.assertIn("Primary Statistical Metrics", category_names)
+        self.assertIn("Vocabulary and Stylistic Markers", category_names)
 
     def test_local_humanizer_preserves_evidence(self) -> None:
         revised, report = humanize_scholarly_text(SAMPLE, "balanced")
@@ -26,6 +30,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertIn("2024", revised)
         self.assertIn("(Adam, 2024)", revised)
         self.assertTrue(report["preservation_passed"])
+        self.assertEqual(report["engine"], "engine1")
 
     def test_docx_export(self) -> None:
         content = build_docx(SAMPLE)
