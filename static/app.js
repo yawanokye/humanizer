@@ -33,7 +33,9 @@ function updateDashboard(report) {
   bindSegments();
   renderFindings(report.segments || []);
   renderMetrics(report.metrics || {});
+  renderConcernCategories(report.style_concern_categories || []);
 }
+
 function bindSegments() {
   document.querySelectorAll('.risk-segment').forEach(el => {
     const show = () => {
@@ -49,6 +51,31 @@ function renderFindings(segments) {
   $('findingsList').innerHTML = flagged.map(s => `<article class="finding ${s.band}"><div class="finding-head"><span>Sentence ${s.index + 1}</span><span>${s.risk}% concern</span></div><p>${escapeHtml(s.text)}</p><ul>${s.reasons.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></article>`).join('');
 }
 function labelize(key) { return key.replaceAll('_',' ').replace(/\b\w/g, c=>c.toUpperCase()); }
+function riskLabel(value) {
+  if (value >= 70) return 'High';
+  if (value >= 45) return 'Moderate';
+  if (value >= 25) return 'Low';
+  return 'Minimal';
+}
+function renderConcernCategories(categories) {
+  const target = $('concernCategories');
+  if (!target) return;
+  if (!categories.length) {
+    target.className = 'concern-categories empty-state';
+    target.textContent = 'No category-level style concerns yet.';
+    return;
+  }
+  target.className = 'concern-categories';
+  target.innerHTML = categories.map(category => {
+    const metrics = (category.metrics || []).map(metric => {
+      const pct = Number(metric.percentage || 0);
+      const evidence = (metric.evidence || []).slice(0, 3).map(item => `<li>${escapeHtml(String(item))}</li>`).join('');
+      return `<div class="concern-metric"><div class="concern-row"><b>${escapeHtml(metric.label || metric.key)}</b><span>${pct}% ${riskLabel(pct)}</span></div><div class="bar"><i style="width:${pct}%"></i></div><ul>${evidence}</ul></div>`;
+    }).join('');
+    const groupPct = Number(category.percentage || 0);
+    return `<article class="concern-group"><header><div><h3>${escapeHtml(category.group)}</h3><p>${escapeHtml(category.description || '')}</p></div><strong>${groupPct}%</strong></header>${metrics}</article>`;
+  }).join('');
+}
 function renderMetrics(metrics) {
   const omit = new Set(['repeated_frames']);
   const entries = Object.entries(metrics).filter(([k,v]) => !omit.has(k) && (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string'));
@@ -66,10 +93,12 @@ async function humanize() {
   const text = $('sourceText').value.trim(); if (!text) return setMessage('Add text before humanising.', 'error');
   busy(true, 'Applying protected scholarly refinement…');
   try {
-    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode').value,use_model:$('useModel').checked})});
+    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode').value,engine:$('engine').value})});
     const data = await response.json(); $('revisedText').value=data.text; updateDashboard(data.report); activateTab('revised');
-    const modelNote = data.model_refiner?.applied ? ' Model-assisted refinement passed preservation checks.' : '';
-    setMessage(`Humanisation completed.${modelNote}`, 'success');
+    const engineNote = data.selected_engine === 'engine2'
+      ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
+      : ' Engine 1 local rewrite completed without an API call.';
+    setMessage(`Humanisation completed.${engineNote}`, 'success');
   } catch(e){ setMessage(e.message,'error'); } finally { busy(false); }
 }
 async function uploadFile(file) {
@@ -85,10 +114,18 @@ async function exportFile(url, annotated, filename) {
   catch(e){ setMessage(e.message,'error'); }
 }
 $('analyseBtn').addEventListener('click',analyse); $('humanizeBtn').addEventListener('click',humanize); $('fileInput').addEventListener('change',e=>uploadFile(e.target.files[0]));
-$('clearBtn').addEventListener('click',()=>{ $('sourceText').value=''; $('revisedText').value=''; currentReport=null; $('highlightedText').textContent='Analyse text to colour the portions that need attention.'; $('highlightedText').className='document-view empty-state'; renderFindings([]); renderMetrics({}); setMessage('Workspace cleared.'); });
+$('clearBtn').addEventListener('click',()=>{ $('sourceText').value=''; $('revisedText').value=''; currentReport=null; $('highlightedText').textContent='Analyse text to colour the portions that need attention.'; $('highlightedText').className='document-view empty-state'; renderFindings([]); renderMetrics({}); renderConcernCategories([]); setMessage('Workspace cleared.'); });
 $('copyBtn').addEventListener('click',async()=>{ const text=$('revisedText').value||$('sourceText').value; await navigator.clipboard.writeText(text); setMessage('Text copied.','success'); });
 $('docxBtn').addEventListener('click',()=>exportFile('/api/export/docx',false,'scholarly_humanized_text.docx'));
 $('annotatedDocxBtn').addEventListener('click',()=>exportFile('/api/export/docx',true,'scholarly_voice_diagnostic.docx'));
 $('htmlBtn').addEventListener('click',()=>exportFile('/api/export/html',true,'scholarly_voice_diagnostic.html'));
 document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>activateTab(tab.dataset.tab)));
-fetch('/api/status').then(r=>r.json()).then(data=>{ $('modelStatus').textContent=data.model.message; $('useModel').disabled=!data.model.configured; }).catch(()=>{$('modelStatus').textContent='Local protected refinement active'; $('useModel').disabled=true;});
+fetch('/api/status').then(r=>r.json()).then(data=>{
+  $('modelStatus').textContent=data.model.message;
+  const engine2 = data.engines?.engine2;
+  const opt = $('engine2Option');
+  if (opt) {
+    opt.disabled = !engine2?.configured;
+    opt.textContent = engine2?.configured ? 'Engine 2, API rewrite' : 'Engine 2, API rewrite (not configured)';
+  }
+}).catch(()=>{$('modelStatus').textContent='Engine 1 local rewrite active. Engine 2 not configured.';});
