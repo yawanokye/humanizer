@@ -42,12 +42,31 @@ class RefinerError(RuntimeError):
 def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
     cfg = config or RefinerConfig.from_env()
     configured = cfg.provider in {"ollama", "openai_compatible"} and bool(cfg.model and cfg.base_url)
+    engine_2_message = "Engine 2 API rewrite is configured." if configured else "Engine 2 API rewrite is not configured."
     return {
         "provider": cfg.provider,
         "model": cfg.model,
         "base_url": cfg.base_url,
         "configured": configured,
-        "message": "Model refinement is available." if configured else "Local protected refinement is active. No external model is configured.",
+        "engines": {
+            "engine1": {
+                "label": "Engine 1, Local rewrite",
+                "configured": True,
+                "default": True,
+                "uses_external_api": False,
+                "message": "Engine 1 local rewrite is active. No API key is required.",
+            },
+            "engine2": {
+                "label": "Engine 2, API rewrite",
+                "configured": configured,
+                "default": False,
+                "uses_external_api": True,
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "message": engine_2_message,
+            },
+        },
+        "message": "Engine 1 local rewrite is active. " + engine_2_message,
     }
 
 
@@ -110,7 +129,7 @@ def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfi
     cfg = config or RefinerConfig.from_env()
     status = provider_status(cfg)
     if not status["configured"]:
-        return text, {"applied": False, "provider": cfg.provider, "reason": status["message"], "batches": []}
+        return text, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "provider": cfg.provider, "reason": status["engines"]["engine2"]["message"], "batches": []}
 
     batches = build_humanizer_batches(text)
     outputs: list[str] = []
@@ -148,6 +167,8 @@ def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfi
     revised = "\n\n".join(outputs).strip()
     return revised, {
         "applied": revised != text,
+        "engine": "engine2",
+        "label": "Engine 2, API rewrite",
         "provider": cfg.provider,
         "model": cfg.model,
         "batches": batch_reports,
