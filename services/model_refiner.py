@@ -84,6 +84,7 @@ def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
                 "uses_external_api": True,
                 "provider": cfg.provider,
                 "model": cfg.model,
+                "supported_models": ["gpt-5.6-terra", "gpt-5.6-luna"] if cfg.provider == "openai" else [],
                 "message": engine_2_message,
             },
         },
@@ -179,8 +180,19 @@ def _refine_ollama(text: str, config: RefinerConfig, mode: str = "balanced") -> 
         raise RefinerError("Ollama returned an unexpected response.") from exc
 
 
-def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfig | None = None) -> tuple[str, dict[str, Any]]:
+def refine_with_model(
+    text: str,
+    *,
+    mode: str = "balanced",
+    config: RefinerConfig | None = None,
+    model_override: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     cfg = config or RefinerConfig.from_env()
+    if model_override and cfg.provider == "openai":
+        allowed_models = {"gpt-5.6-terra", "gpt-5.6-luna"}
+        if model_override not in allowed_models:
+            raise RefinerError(f"Unsupported Engine 2 model: {model_override}")
+        cfg.model = model_override
     status = provider_status(cfg)
     if not status["configured"]:
         return text, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "provider": cfg.provider, "reason": status["engines"]["engine2"]["message"], "batches": []}
