@@ -590,16 +590,21 @@ def dashboard_report(text: str) -> dict[str, Any]:
     global_report = analyse_scholarly_style(text)
     segments = analyse_segments(text)
 
-    # Naturalness is a writing-quality measure, kept separate from the AI detector.
+    # Naturalness remains an internal rewrite-quality metric. It is deliberately
+    # not presented as the inverse of AI likelihood. The public complementary
+    # score is Human-like Style = 100 - AI Signal.
     naturalness = max(0, min(100, int(global_report.get("naturalness_score", 0))))
     style_concern = 100 - naturalness  # legacy API field only
 
     detector = ai_check_report(text, global_report=global_report, academic=True)
+    ai_signal = max(0, min(100, int(detector["ai_detection_percentage"])))
+    human_like_style = 100 - ai_signal
     high_count = sum(1 for item in segments if item["band"] == "high")
     moderate_count = sum(1 for item in segments if item["band"] == "moderate")
 
     return {
-        "ai_detection_percentage": detector["ai_detection_percentage"],
+        "ai_detection_percentage": ai_signal,
+        "human_like_style_percentage": human_like_style,
         "ai_detector": detector,
         "ai_verdict": detector["verdict"],
         "ai_confidence": detector["confidence"],
@@ -607,6 +612,8 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "ai_score_max": detector["max_score"],
         "ai_edited_fraction": detector["ai_edited_fraction"],
         "ai_signal_breakdown": detector["signals"],
+        # Internal/backward-compatible rewrite-quality field. The dashboard does not
+        # use this as the complement of AI Signal.
         "naturalness_percentage": naturalness,
         # Backward-compatible fields for older clients. They are no longer the main dashboard.
         "style_concern_percentage": style_concern,
@@ -617,8 +624,8 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "highlighted_html": build_highlighted_html(text, segments),
         "metrics": global_report,
         "disclaimer": (
-            "AI Detector screens nine explainable signal families and sentence-level patterns. The percentage is a signal score, "
-            "not a probability or proof of authorship. Scholarly prose is calibrated for legitimate hedging, neutral register, lists and punctuation."
+            "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
+            "They describe detected writing patterns, not the true identity of the author. Scholarly prose is calibrated for legitimate hedging, neutral register, lists and punctuation."
         ),
     }
 

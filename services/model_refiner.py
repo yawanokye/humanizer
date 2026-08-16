@@ -104,21 +104,30 @@ def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeo
         raise RefinerError(f"Could not reach the model service: {exc.reason}") from exc
 
 
-def _system_prompt() -> str:
+def _system_prompt(mode: str = "balanced") -> str:
     rules = "\n".join(f"- {rule}" for rule in scholarly_humanizer_prompt_rules())
+    depth = (
+        "Apply a substantial line edit. Recast formulaic sentence openings, repetitive transitions, over-balanced structures, "
+        "uniform cadence and generic metadiscourse wherever this can be done without changing substance."
+        if mode == "deep"
+        else "Apply a clear line edit to formulaic or repetitive prose while preserving the author’s disciplinary register."
+    )
     return (
-        "You are a preservation-gated scholarly style editor. Improve natural scholarly voice, flow, rhythm, and precision. "
+        "You are a preservation-gated scholarly style editor. Improve natural scholarly voice, flow, rhythm, specificity, and sentence variety. "
+        + depth + " "
+        "Do not insert typos, slang, fake uncertainty, invented examples or unsupported claims. "
         "Return only the revised passage. Never add analysis or markdown fences.\n\nRules:\n" + rules
     )
 
 
-def _refine_openai(text: str, config: RefinerConfig) -> str:
+def _refine_openai(text: str, config: RefinerConfig, mode: str = "balanced") -> str:
     """Refine with OpenAI's Responses API, recommended for GPT-5.6."""
     payload = {
         "model": config.model,
-        "reasoning": {"effort": "low"},
-        "instructions": _system_prompt(),
+        "reasoning": {"effort": "medium" if mode == "deep" else "low"},
+        "instructions": _system_prompt(mode),
         "input": "Revise this passage while preserving every fact, number, citation, heading and placeholder exactly:\n\n" + text,
+        "store": False,
     }
     headers = {"Authorization": f"Bearer {config.api_key}"}
     data = _post_json(f"{config.base_url}/responses", payload, headers, config.timeout_seconds)
@@ -136,12 +145,12 @@ def _refine_openai(text: str, config: RefinerConfig) -> str:
     raise RefinerError("OpenAI returned no text output.")
 
 
-def _refine_openai_compatible(text: str, config: RefinerConfig) -> str:
+def _refine_openai_compatible(text: str, config: RefinerConfig, mode: str = "balanced") -> str:
     payload = {
         "model": config.model,
         "temperature": 0.25,
         "messages": [
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": _system_prompt(mode)},
             {"role": "user", "content": "Revise this passage while preserving every fact, number, citation, heading and placeholder exactly:\n\n" + text},
         ],
     }
@@ -153,13 +162,13 @@ def _refine_openai_compatible(text: str, config: RefinerConfig) -> str:
         raise RefinerError("The model service returned an unexpected response.") from exc
 
 
-def _refine_ollama(text: str, config: RefinerConfig) -> str:
+def _refine_ollama(text: str, config: RefinerConfig, mode: str = "balanced") -> str:
     payload = {
         "model": config.model,
         "stream": False,
         "options": {"temperature": 0.25},
         "messages": [
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": _system_prompt(mode)},
             {"role": "user", "content": "Revise this passage while preserving every fact, number, citation, heading and placeholder exactly:\n\n" + text},
         ],
     }
@@ -187,18 +196,18 @@ def refine_with_model(text: str, *, mode: str = "balanced", config: RefinerConfi
             batch_reports.append({"index": index, "protected": True, "applied": False})
             continue
         score = int((batch.get("diagnostic") or {}).get("naturalness_score", 0))
-        should_refine = mode == "deep" or score < 82
+        should_refine = mode == "deep" or score < 92
         if not should_refine:
             outputs.append(batch_text)
             batch_reports.append({"index": index, "protected": False, "applied": False, "score": score, "reason": "Already above selective threshold"})
             continue
         try:
             if cfg.provider == "ollama":
-                candidate = _refine_ollama(batch_text, cfg)
+                candidate = _refine_ollama(batch_text, cfg, mode)
             elif cfg.provider == "openai":
-                candidate = _refine_openai(batch_text, cfg)
+                candidate = _refine_openai(batch_text, cfg, mode)
             elif cfg.provider == "openai_compatible":
-                candidate = _refine_openai_compatible(batch_text, cfg)
+                candidate = _refine_openai_compatible(batch_text, cfg, mode)
             else:
                 raise RefinerError(f"Unsupported provider: {cfg.provider}")
             valid, issues = validate_humanizer_preservation(batch_text, candidate, max_word_change_ratio=max_ratio)

@@ -497,10 +497,24 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     scores = [int(signal["score"]) for signal in signals]
     total = sum(scores)
     paragraph_ai_pct, paragraph_risks = _paragraph_ai_profile(paragraphs, academic=academic)
-    # Category score remains primary. Paragraph-local signals make the display more sensitive to mixed authorship.
+
+    # Keep the 0–27 category score for the verdict, but use a finer-grained
+    # signal index for the percentage shown in the dashboard. This avoids a
+    # staircase effect where several edits can remove evidence without moving
+    # a category from 2/3 to 1/3. Evidence density makes those improvements
+    # visible while corroboration across categories remains the main signal.
     category_pct = round(total / 27 * 100)
-    local_blend = round(category_pct * 0.80 + paragraph_ai_pct * 0.20)
-    ai_pct = max(0, min(100, max(category_pct, local_blend)))
+    evidence_load = 0
+    for signal in signals:
+        points = sum(SEVERITY_WEIGHT.get(item.get("severity", "weak"), 1) for item in signal.get("evidence", []))
+        evidence_load += min(6, points)
+    evidence_pct = round(evidence_load / (9 * 6) * 100)
+    ai_pct = round(category_pct * 0.72 + evidence_pct * 0.18 + paragraph_ai_pct * 0.10)
+    if total >= 14:
+        ai_pct = max(50, ai_pct)
+    elif total <= 4:
+        ai_pct = min(24, ai_pct)
+    ai_pct = max(0, min(100, ai_pct))
     verdict = _verdict(total)
     confidence = _confidence(raw, total, scores)
     fraction = _fraction(total, scores)
@@ -545,6 +559,7 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
         "word_count": wc,
         "sentence_lengths": lengths,
         "category_signal_percentage": category_pct,
+        "evidence_signal_percentage": evidence_pct,
         "paragraph_ai_signal_percentage": paragraph_ai_pct,
         "paragraph_signal_profile": paragraph_risks,
     }
