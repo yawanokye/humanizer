@@ -90,8 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.6.0', html)
-        self.assertIn('/static/style.css?v=1.6.0', html)
+        self.assertIn('/static/app.js?v=1.7.0', html)
+        self.assertIn('/static/style.css?v=1.7.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -194,6 +194,69 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         luna = HumanizeRequest(text=SAMPLE, engine="engine2", engine2_model="gpt-5.6-luna")
         self.assertEqual(terra.engine2_model, "gpt-5.6-terra")
         self.assertEqual(luna.engine2_model, "gpt-5.6-luna")
+
+    def test_dashboard_explanatory_counts_match_detector_basis(self) -> None:
+        report = dashboard_report(SAMPLE)
+        self.assertEqual(report["active_signal_categories"], sum(1 for item in report["ai_signal_breakdown"] if item["score"] > 0))
+        self.assertEqual(report["signal_evidence_items"], sum(len(item.get("evidence", [])) for item in report["ai_signal_breakdown"]))
+        self.assertGreaterEqual(report["flagged_sentence_count"], 0)
+
+    def test_academic_technical_terms_do_not_create_false_ai_signal(self) -> None:
+        academic = (
+            "Both ordinary least squares with Newey-West inference and a Huber robust regression "
+            "produced similar coefficients. The strongest absolute correlation is between SMB and RMW. "
+            "The result provides a numerical robustness check rather than a separate economic sensitivity test."
+        )
+        report = dashboard_report(academic)
+        by_name = {item["name"]: item for item in report["ai_signal_breakdown"]}
+        self.assertEqual(by_name["Perplexity"]["score"], 0)
+        self.assertEqual(by_name["Rhetorical scaffolding"]["score"], 0)
+
+    def test_zero_flagged_sentences_cannot_show_high_ai_index_without_strong_global_corroboration(self) -> None:
+        academic = (
+            "Portfolio selection requires a balance between expected return, risk, concentration, and model uncertainty. "
+            "Markowitz formalised this trade-off by evaluating portfolios through expected returns and covariance structure. "
+            "The analysis compares constrained allocations with an unconstrained benchmark and reports out-of-sample results."
+        )
+        report = dashboard_report(academic)
+        if report["flagged_sentence_count"] == 0 and report["ai_score"] < 14:
+            self.assertLessEqual(report["ai_detection_percentage"], 34)
+
+    def test_provider_auto_detects_openai_key_when_provider_not_named(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
+            config = RefinerConfig.from_env()
+            self.assertEqual(config.provider, "openai")
+            self.assertEqual(config.model, "gpt-5.6-terra")
+            self.assertTrue(provider_status(config)["configured"])
+
+    def test_provider_status_identifies_missing_openai_key(self) -> None:
+        with patch.dict(os.environ, {"HUMANIZER_PROVIDER": "openai", "OPENAI_MODEL": "gpt-5.6-terra"}, clear=True):
+            status = provider_status()
+            self.assertFalse(status["configured"])
+            self.assertIn("OPENAI_API_KEY", status.get("missing", []))
+
+    def test_engine2_missing_key_uses_explicit_engine1_fallback(self) -> None:
+        from app import HumanizeRequest, humanize
+        with patch.dict(os.environ, {"HUMANIZER_PROVIDER": "openai", "OPENAI_MODEL": "gpt-5.6-terra"}, clear=True):
+            data = humanize(HumanizeRequest(text=SAMPLE, mode="deep", engine="engine2"))
+        self.assertEqual(data["actual_engine"], "engine1_fallback")
+        self.assertTrue(data["engine_2"].get("fallback_used"))
+        self.assertIn("OPENAI_API_KEY", data["engine_2"].get("reason", ""))
+
+    def test_deep_humanizer_makes_safe_formulaic_changes_and_does_not_worsen_ai_index(self) -> None:
+        formulaic = (
+            "It is important to note that the analysis provides a comprehensive assessment of the evidence. "
+            "Moreover, the study considers institutional context. Moreover, the study examines implementation conditions. "
+            "Moreover, the study explains the implications for practice and policy while preserving the cited evidence (Adam, 2024)."
+        )
+        before = dashboard_report(formulaic)
+        revised, report = humanize_scholarly_text(formulaic, "deep")
+        after = dashboard_report(revised)
+        self.assertNotEqual(revised, formulaic)
+        self.assertTrue(report["preservation_passed"])
+        self.assertLessEqual(after["ai_detection_percentage"], before["ai_detection_percentage"])
+        self.assertIn("(Adam, 2024)", revised)
+
 
 
 if __name__ == "__main__":
