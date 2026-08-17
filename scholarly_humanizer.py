@@ -71,6 +71,15 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bpivotal role\b", re.I), "central role"),
     (re.compile(r"\bmultifaceted\b", re.I), "complex"),
     (re.compile(r"\bthis (?:highlights|underscores|demonstrates) the importance of\b", re.I), "this shows the importance of"),
+    # Reduce repeated demonstrative scaffolding common in over-polished academic
+    # prose without changing the underlying claim.
+    (re.compile(r"\bThis pattern is consistent with\b", re.I), "The pattern is consistent with"),
+    (re.compile(r"\bThis result follows from\b", re.I), "The result follows from"),
+    (re.compile(r"\bThis result does not establish\b", re.I), "The result does not establish"),
+    (re.compile(r"\bThis distinction matters because\b", re.I), "The distinction matters because"),
+    (re.compile(r"\bThis stability suggests\b", re.I), "The stability suggests"),
+    (re.compile(r"\bThis design distinguishes\b", re.I), "The design distinguishes"),
+    (re.compile(r"\bThis choice is applied\b", re.I), "The choice is applied"),
 )
 
 _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
@@ -462,7 +471,7 @@ def _split_long_compound_sentences(paragraph: str) -> str:
     subject = r"(?:the|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study)"
     splitter = re.compile(rf",\s+(and|but)\s+(?={subject}\b)", re.I)
     for sentence in sentences:
-        if _word_count(sentence) < 38:
+        if _word_count(sentence) < 28:
             revised.append(sentence)
             continue
         match = splitter.search(sentence)
@@ -472,7 +481,7 @@ def _split_long_compound_sentences(paragraph: str) -> str:
         left = sentence[:match.start()].rstrip(" ,")
         right = sentence[match.end():].strip()
         conjunction = match.group(1).lower()
-        if _word_count(left) < 12 or _word_count(right) < 9:
+        if _word_count(left) < 10 or _word_count(right) < 9:
             revised.append(sentence)
             continue
         if right[:1].islower():
@@ -482,6 +491,42 @@ def _split_long_compound_sentences(paragraph: str) -> str:
         if conjunction == "but":
             right = "But " + right
         revised.extend([left.rstrip(".!?") + ".", right])
+    return " ".join(revised)
+
+
+def _split_long_contrast_sentences(paragraph: str) -> str:
+    """Create more natural cadence at safe contrast joins in long prose.
+
+    The edit preserves both propositions and changes only the connective form.
+    It deliberately avoids because/since/while joins where the relation can be
+    more semantically delicate.
+    """
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    revised: list[str] = []
+    explicit_subject = re.compile(
+        r"^(?:the|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study|convergence|performance|returns|weights|exposure)\b",
+        re.I,
+    )
+    for sentence in sentences:
+        if _word_count(sentence) < 26:
+            revised.append(sentence)
+            continue
+        match = re.search(r",\s+(yet|although)\s+", sentence, re.I)
+        if not match:
+            revised.append(sentence)
+            continue
+        left = sentence[:match.start()].rstrip(" ,")
+        right = sentence[match.end():].strip()
+        if _word_count(left) < 10 or _word_count(right) < 7:
+            revised.append(sentence)
+            continue
+        if not explicit_subject.match(right):
+            revised.append(sentence)
+            continue
+        if right[:1].islower():
+            right = right[:1].upper() + right[1:]
+        bridge = "Yet " if match.group(1).lower() == "yet" else "Even so, "
+        revised.extend([left.rstrip(".!?") + ".", bridge + right])
     return " ".join(revised)
 
 
@@ -501,6 +546,7 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
         value = _split_long_semicolon_sentences(value)
         if level == "deep":
             value = _split_long_compound_sentences(value)
+            value = _split_long_contrast_sentences(value)
 
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
@@ -640,6 +686,11 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     normalised_mode = str(mode or "balanced").strip().lower()
     before_report = analyse_scholarly_style(original)
     before_score = int(before_report.get("naturalness_score", 0))
+    # Import locally to keep the core module usable on its own while allowing
+    # Engine 1 to prefer edits that also reduce the same public AI-style signals
+    # shown on the dashboard.
+    from services.ai_detector import ai_check_report
+    before_ai_signal = int(ai_check_report(original, global_report=before_report, academic=True).get("ai_detection_percentage", 0))
 
     if normalised_mode in {"off", "none", "disabled", "0", "false"} or not original.strip():
         report = dict(before_report)
@@ -658,7 +709,7 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
 
     original_words = max(1, _word_count(original))
     local_change_limit = 0.60 if original_words < 120 else max(0.12, min(0.45, 70 / original_words))
-    candidates: list[tuple[int, str, str, dict[str, Any]]] = []
+    candidates: list[tuple[int, int, str, str, dict[str, Any]]] = []
     preservation_failures: list[str] = []
 
     for level in allowed_levels:
@@ -689,7 +740,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             continue
         candidate_report = analyse_scholarly_style(candidate)
         score = int(candidate_report.get("naturalness_score", 0))
-        candidates.append((score, level, candidate, candidate_report))
+        candidate_ai_signal = int(ai_check_report(candidate, global_report=candidate_report, academic=True).get("ai_detection_percentage", 0))
+        candidates.append((score, candidate_ai_signal, level, candidate, candidate_report))
 
     if not candidates:
         report = dict(before_report)
@@ -702,10 +754,12 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         })
         return original, report
 
-    # Prefer the highest naturalness score. For a tie, prefer the lighter pass.
+    # Prefer naturalness first and lower AI-style signal second. When both are
+    # tied, honour the requested depth so Deep can still apply safe cadence
+    # improvements rather than silently returning the untouched Light candidate.
     level_rank = {"light": 0, "balanced": 1, "deep": 2}
-    candidates.sort(key=lambda item: (-item[0], level_rank.get(item[1], 9)))
-    best_score, best_level, best_text, best_report = candidates[0]
+    candidates.sort(key=lambda item: (-item[0], item[1], -level_rank.get(item[2], 0)))
+    best_score, best_ai_signal, best_level, best_text, best_report = candidates[0]
 
     if best_score < before_score:
         report = dict(before_report)
@@ -724,5 +778,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         "preservation_passed": True, "preservation_issues": [],
         "score_before": before_score, "score_after": best_score,
         "naturalness_gain": best_score - before_score,
+        "ai_signal_before": before_ai_signal,
+        "ai_signal_after": best_ai_signal,
+        "ai_signal_reduction": before_ai_signal - best_ai_signal,
     })
     return best_text, report

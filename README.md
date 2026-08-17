@@ -15,7 +15,7 @@ The existing humanizer still uses its internal Naturalness metric to choose the 
 - Complementary Human-like Style score, always `100 - AI Signal`.
 - Internal Naturalness scoring remains part of rewrite selection but is not a headline detector metric.
 - Nine signal families: perplexity/predictability, burstiness, hedge density, structural tells, specificity, transitions, punctuation, voice/register and rhetorical scaffolding.
-- Sentence-level AI-signal colour map with explainable reasons and category evidence.
+- Sentence-level AI-signal colour map with explainable reasons and category evidence. The headline diagnostic counters show active signal categories and evidence items so they reconcile with the document-level index.
 - Engine 1, Local rewrite, protected humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
 - Engine 2, API rewrite, optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
 - Light, balanced and deep modes.
@@ -25,12 +25,12 @@ The existing humanizer still uses its internal Naturalness metric to choose the 
 
 ## Important interpretation
 
-The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal score, not a calibrated probability and not proof of authorship. Strong verdicts require corroboration across multiple signal families. Academic prose is calibrated so normal hedging, neutral register, lists and semicolon use do not become strong evidence by themselves.
+The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal index, not a calibrated probability and not proof of authorship. Version 1.7 combines category severity with evidence density, prose-sentence risk and paragraph-level distribution. Strong verdicts require corroboration across multiple signal families. Academic prose is calibrated so technical terms such as “robust”, ordinary statistical “between X and Y” phrasing, citation semicolons, normal lists and neutral scholarly register do not become strong evidence by themselves. If there are no flagged prose sentences and the global category evidence is not strong, the public index is capped below the moderate band.
 
 ## Rewrite engines
 
 - **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. It removes low-risk formulaic phrasing, repeated connectors and some overloaded sentence structures while preserving academic evidence signatures.
-- **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and the official API base URL. Add only the secret `OPENAI_API_KEY` during deployment. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers naturalness.
+- **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and the API base URL. Add the secret `OPENAI_API_KEY` during deployment. If the key is missing, the app now states that Engine 1 fallback was used instead of reporting an unchanged Engine 2 rewrite. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers internal rewrite quality.
 
 ## Deploy to Render with Blueprint
 
@@ -114,4 +114,4 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.6.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.7.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.

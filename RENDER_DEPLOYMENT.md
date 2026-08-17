@@ -9,7 +9,7 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - Put the project files at the repository root.
 - Confirm that `Dockerfile` and `render.yaml` are in the root.
 - Do not upload a real `.env` file or API key to Git.
-- Keep `HUMANIZER_PROVIDER=none` for the first deployment so Engine 1 local rewrite remains the only active rewrite path.
+- The Blueprint preconfigures `HUMANIZER_PROVIDER=openai`. Add `OPENAI_API_KEY` as a Render secret if you want Engine 2 to run. Engine 1 remains available without any API key.
 
 ## Render settings
 
@@ -39,3 +39,11 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - Treat an external model API key as a Render secret.
 - Inform users that text is sent to the configured external model only when Engine 2, API rewrite is selected.
 - Use access control before exposing the service to a restricted institutional audience.
+
+
+## Version 1.7 detector/rewrite consistency
+
+- The dashboard counters now report **Active signal categories** and **Evidence items**, which directly explain the document-level AI Signal Index.
+- Sentence-level high/moderate counts are no longer used as the headline statistics because document-level signals such as burstiness can exist without a single high-risk sentence.
+- Academic calibration excludes common technical uses such as Huber robust regression, ordinary statistical “between X and Y” phrasing and semicolons inside citations from inflated AI-style evidence.
+- If Engine 2 is selected without `OPENAI_API_KEY`, the response explicitly reports **Engine 1 fallback**. Add the secret under Render → Environment and redeploy/restart the service for Engine 2 to run.

@@ -22,7 +22,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.6.0",
+    version="1.7.0",
     description="Nine-signal AI-style detection with complementary Human-like Style scoring, Engine 1 local rewrite and optional Engine 2 API rewrite.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -139,6 +139,7 @@ def analyse(payload: TextRequest) -> dict:
 def humanize(payload: HumanizeRequest) -> dict:
     original = _validate_size(payload.text)
     selected_engine = "engine2" if payload.use_model else payload.engine
+    actual_engine = selected_engine
 
     engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
     engine2_report = {
@@ -150,14 +151,28 @@ def humanize(payload: HumanizeRequest) -> dict:
     revised = engine1_text
 
     if selected_engine == "engine2":
-        if payload.mode in {"balanced", "deep"}:
-            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode, model_override=payload.engine2_model)
-        else:
+        status = provider_status()
+        if not status.get("configured"):
+            actual_engine = "engine1_fallback"
+            revised = engine1_text
             engine2_report = {
                 "applied": False,
                 "engine": "engine2",
                 "label": "Engine 2, API rewrite",
-                "reason": "Engine 2 is available only in balanced or deep mode.",
+                "reason": status.get("engines", {}).get("engine2", {}).get("message", "Engine 2 API rewrite is not configured."),
+                "fallback_used": True,
+            }
+        elif payload.mode in {"balanced", "deep"}:
+            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode, model_override=payload.engine2_model)
+        else:
+            actual_engine = "engine1_fallback"
+            revised = engine1_text
+            engine2_report = {
+                "applied": False,
+                "engine": "engine2",
+                "label": "Engine 2, API rewrite",
+                "reason": "Engine 2 is available only in balanced or deep mode. Engine 1 fallback was used.",
+                "fallback_used": True,
             }
 
     original_dashboard = dashboard_report(original)
@@ -182,10 +197,13 @@ def humanize(payload: HumanizeRequest) -> dict:
         after_human_like = before_human_like
         if selected_engine == "engine2":
             engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because it degraded the protected rewrite-quality or Human-like Style profile."}
+            actual_engine = "engine1_fallback" if engine1_text != original else "none"
 
     return {
         "selected_engine": selected_engine,
+        "actual_engine": actual_engine,
         "selected_engine2_model": payload.engine2_model if selected_engine == "engine2" else None,
+        "changed": revised != original,
         "original_report": original_dashboard,
         "text": revised,
         "report": revised_dashboard,
