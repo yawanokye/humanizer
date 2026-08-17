@@ -25,7 +25,10 @@ class RefinerConfig:
 
     @classmethod
     def from_env(cls) -> "RefinerConfig":
-        provider = os.getenv("HUMANIZER_PROVIDER", "none").strip().lower()
+        provider_raw = os.getenv("HUMANIZER_PROVIDER", "").strip().lower()
+        # If a standard OpenAI key is present, Engine 2 should work even when
+        # HUMANIZER_PROVIDER was omitted in an older Render deployment.
+        provider = provider_raw or ("openai" if os.getenv("OPENAI_API_KEY", "").strip() else "none")
 
         # Engine 2 supports standard OpenAI environment variables directly.
         # Generic HUMANIZER_* names remain supported for backward compatibility
@@ -63,12 +66,26 @@ def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
         and bool(cfg.model and cfg.base_url)
         and (cfg.provider != "openai" or bool(cfg.api_key))
     )
-    engine_2_message = (f"Engine 2 API rewrite is configured with {cfg.model}." if configured else "Engine 2 API rewrite is not configured.")
+    missing: list[str] = []
+    if cfg.provider not in {"ollama", "openai", "openai_compatible"}:
+        missing.append("HUMANIZER_PROVIDER=openai")
+    if not cfg.model:
+        missing.append("OPENAI_MODEL")
+    if not cfg.base_url:
+        missing.append("OPENAI_BASE_URL")
+    if cfg.provider == "openai" and not cfg.api_key:
+        missing.append("OPENAI_API_KEY")
+    engine_2_message = (
+        f"Engine 2 API rewrite is configured with {cfg.model}."
+        if configured
+        else "Engine 2 API rewrite is not configured" + (f". Missing: {', '.join(missing)}." if missing else ".")
+    )
     return {
         "provider": cfg.provider,
         "model": cfg.model,
         "base_url": cfg.base_url,
         "configured": configured,
+        "missing": missing,
         "engines": {
             "engine1": {
                 "label": "Engine 1, Local rewrite",

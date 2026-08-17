@@ -601,6 +601,10 @@ def dashboard_report(text: str) -> dict[str, Any]:
     human_like_style = 100 - ai_signal
     high_count = sum(1 for item in segments if item["band"] == "high")
     moderate_count = sum(1 for item in segments if item["band"] == "moderate")
+    active_signal_categories = sum(1 for signal in detector.get("signals", []) if int(signal.get("score", 0)) > 0)
+    elevated_signal_categories = sum(1 for signal in detector.get("signals", []) if int(signal.get("score", 0)) >= 2)
+    evidence_items = sum(len(signal.get("evidence", []) or []) for signal in detector.get("signals", []))
+    flagged_sentence_count = int(detector.get("flagged_sentence_count", 0))
 
     return {
         "ai_detection_percentage": ai_signal,
@@ -620,12 +624,17 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "style_concern_categories": _build_category_concerns(text, segments, global_report),
         "high_risk_segments": high_count,
         "moderate_risk_segments": moderate_count,
+        "active_signal_categories": active_signal_categories,
+        "elevated_signal_categories": elevated_signal_categories,
+        "signal_evidence_items": evidence_items,
+        "flagged_sentence_count": flagged_sentence_count,
         "segments": segments,
         "highlighted_html": build_highlighted_html(text, segments),
         "metrics": global_report,
         "disclaimer": (
             "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
-            "They describe detected writing patterns, not the true identity of the author. Scholarly prose is calibrated for legitimate hedging, neutral register, lists and punctuation."
+            "The AI Signal combines document-level patterns with sentence-level evidence, so the category statistics below are the primary explanation of the score. "
+            "They describe detected writing patterns, not the true identity of the author. Scholarly prose is calibrated for legitimate hedging, technical vocabulary, lists and punctuation."
         ),
     }
 
