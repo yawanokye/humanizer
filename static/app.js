@@ -50,8 +50,8 @@ function updateDashboard(report, comparison = null) {
   if ($('aiFraction')) $('aiFraction').textContent = detector.ai_edited_fraction || report.ai_edited_fraction || '—';
   if ($('wordCount')) $('wordCount').textContent = report.metrics?.word_count ?? 0;
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
-  if ($('highRisk')) $('highRisk').textContent = report.high_risk_segments ?? 0;
-  if ($('moderateRisk')) $('moderateRisk').textContent = report.moderate_risk_segments ?? 0;
+  if ($('activeSignals')) $('activeSignals').textContent = `${report.active_signal_categories ?? 0}/9`;
+  if ($('evidenceCount')) $('evidenceCount').textContent = report.signal_evidence_items ?? 0;
   if ($('aiScoreBar')) $('aiScoreBar').style.width = `${Math.max(0, Math.min(100, ai))}%`;
   if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${Math.max(0, Math.min(100, humanLike))}%`;
   if (comparison?.ai && $('aiGain')) {
@@ -106,10 +106,11 @@ function renderDetector(detector) {
 
   const header = `
     <section class="detector-summary">
-      <div><small>Overall score</small><strong>${Number(detector.overall_score || 0)} / ${Number(detector.max_score || 27)}</strong></div>
+      <div><small>AI signal index</small><strong>${Number(detector.ai_detection_percentage || 0)}%</strong></div>
+      <div><small>Forensic category score</small><strong>${Number(detector.overall_score || 0)} / ${Number(detector.max_score || 27)}</strong></div>
       <div><small>Verdict</small><strong>${escapeHtml(detector.verdict || '—')}</strong></div>
       <div><small>Confidence</small><strong>${escapeHtml(detector.confidence || '—')}</strong></div>
-      <div><small>AI-edited estimate</small><strong>${escapeHtml(detector.ai_edited_fraction || '—')}</strong></div>
+      <div class="wide"><small>AI-edited estimate</small><strong>${escapeHtml(detector.ai_edited_fraction || '—')}</strong></div>
     </section>`;
 
   const cards = signals.map(signal => {
@@ -191,12 +192,15 @@ async function humanize() {
     };
     updateDashboard(data.report, {humanLike: humanLikeImprovement, ai: aiImprovement});
     activateTab('revised');
-    const engineNote = data.selected_engine === 'engine2'
-      ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and rewrite-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
-      : ' Engine 1 local rewrite completed without an API call.';
+    const engineNote = data.actual_engine === 'engine1_fallback'
+      ? ` Engine 2 was unavailable, so Engine 1 fallback was used. ${data.engine_2?.reason || ''}`
+      : data.selected_engine === 'engine2'
+        ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and rewrite-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
+        : ' Engine 1 local rewrite completed without an API call.';
     const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
     const aiNote = ` AI signal index ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
-    setMessage(`Humanisation completed.${engineNote}${aiNote}${humanLikeNote}`, 'success');
+    const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
+    setMessage(`${outcome}${engineNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
   } catch(e) {
     setMessage(e.message,'error');
   } finally {
@@ -298,6 +302,10 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('aiVerdict')) $('aiVerdict').textContent='—';
   if ($('aiConfidence')) $('aiConfidence').textContent='—';
   if ($('aiFraction')) $('aiFraction').textContent='—';
+  if ($('wordCount')) $('wordCount').textContent='0';
+  if ($('sentenceCount')) $('sentenceCount').textContent='0';
+  if ($('activeSignals')) $('activeSignals').textContent='0/9';
+  if ($('evidenceCount')) $('evidenceCount').textContent='0';
   if ($('highlightedText')) {
     $('highlightedText').textContent='Run AI detection to colour sentences by AI-style signal strength.';
     $('highlightedText').className='document-view empty-state';
