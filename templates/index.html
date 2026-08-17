@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.6.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.7.0">
 </head>
 <body>
   <header class="topbar">
@@ -75,8 +75,8 @@
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
         <div><span id="sentenceCount">0</span><small>Sentences</small></div>
-        <div><span id="highRisk">0</span><small>High-signal sentences</small></div>
-        <div><span id="moderateRisk">0</span><small>Moderate-signal sentences</small></div>
+        <div><span id="activeSignals">0/9</span><small>Active signal categories</small></div>
+        <div><span id="evidenceCount">0</span><small>Evidence items</small></div>
       </div>
       <div class="legend">
         <span><i class="dot natural"></i>Minimal signal</span><span><i class="dot low"></i>Low signal</span>
@@ -111,6 +111,6 @@
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.6.0"></script>
+  <script src="/static/app.js?v=1.7.0"></script>
 </body>
 </html>
