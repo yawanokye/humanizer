@@ -68,6 +68,15 @@ PARALLEL_QUESTION_LIST_RE = re.compile(r"\b(?:what|why|how)\b[^,.]{1,60},\s*\b(?
 
 SEVERITY_WEIGHT = {"weak": 1, "moderate": 2, "strong": 3}
 
+# Reliability weights derived from the supplied AI-check evaluation rubric.
+# Countable lexical/punctuation signals carry more weight than subjective
+# rhetoric/register judgments. The weighted maximum is 25.05 before rescaling.
+CATEGORY_WEIGHTS = {
+    "A": 1.0, "B": 1.0, "C": 0.75, "D": 0.85, "E": 0.85,
+    "F": 1.0, "G": 1.0, "H": 0.75, "I": 0.60,
+}
+WEIGHTED_MAX = sum(3 * weight for weight in CATEGORY_WEIGHTS.values())
+
 
 def _words(text: str) -> list[str]:
     return [w.lower().replace("’", "'") for w in WORD_RE.findall(text or "")]
@@ -314,12 +323,93 @@ def sentence_ai_signal(sentence: str, academic: bool = True) -> tuple[int, list[
     return min(100, risk), reasons
 
 
+def _prose_sentences_from_text(text: str) -> list[str]:
+    """Extract prose without letting headings, tables or form rows pollute signals."""
+    results: list[str] = []
+    for line_no, line in enumerate((text or "").splitlines()):
+        stripped = re.sub(r"\s+", " ", line).strip()
+        if not stripped:
+            continue
+        if "\t" in line or " | " in line:
+            continue
+        if re.match(r"^(?:Table|Figure|Fig\.?|Appendix)\s+\d*[A-Za-z]?[.:]?\b", stripped, re.I):
+            continue
+        if re.match(r"^\d+(?:\.\d+){0,3}\s+[A-Z]", stripped):
+            continue
+        if re.match(r"^(?:Abstract|Executive Summary|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography)$", stripped, re.I):
+            continue
+        if re.match(r"^(?:FULL LEGAL NAME|LOCATION|EMAIL ADDRESS|Team member\s+\d+)\b", stripped, re.I):
+            continue
+        # Titles and affiliation lines often have no sentence-ending punctuation.
+        if line_no < 15 and not re.search(r"[.!?]$", stripped) and len(_words(stripped)) <= 30:
+            continue
+        for sentence in _sentences(stripped):
+            if _is_prose_sentence(sentence):
+                results.append(sentence)
+    return results
+
+
+def _prose_paragraphs_from_text(text: str) -> list[str]:
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", text or ""):
+        lines = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or "\t" in line or " | " in line:
+                continue
+            if re.match(r"^(?:Table|Figure|Fig\.?|Appendix)\s+\d*[A-Za-z]?[.:]?\b", stripped, re.I):
+                continue
+            if re.match(r"^\d+(?:\.\d+){0,3}\s+[A-Z]", stripped):
+                continue
+            if re.match(r"^(?:Abstract|Executive Summary|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography)$", stripped, re.I):
+                continue
+            if len(_words(stripped)) >= 6:
+                lines.append(stripped)
+        if lines:
+            paragraphs.append(" ".join(lines))
+    return paragraphs
+
+
+def _humanness_counter_evidence(text: str, prose_sentences: list[str], academic: bool) -> tuple[int, list[dict[str, str]]]:
+    """Score counter-evidence before interpreting AI-style cues.
+
+    This is intentionally conservative. It never rewards deliberately inserted
+    mistakes. Existing idiosyncrasies, self-corrections and domain-specific
+    technical execution can offset weak style-only signals.
+    """
+    ev: list[dict[str, str]] = []
+    raw = text or ""
+    explicit_self_correction = re.search(r"\b(?:wait[,—-]|I mean[,—-]|that(?:'|’)s not quite right|no,? that(?:'|’)s not)\b", raw, re.I)
+    if explicit_self_correction:
+        _add(ev, "Natural self-correction or mid-thought revision appears in the text.", "moderate")
+    if re.search(r"\b(?:I|we)\b.{0,90}\b(?:on|in|during)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December|\d{1,2}\s+[A-Z][a-z]+)\b", raw, re.I):
+        _add(ev, "Specific personal/time-anchored detail appears rather than generic illustration.", "moderate")
+    # Academic counter-evidence: exact methods + statistics + named datasets or software.
+    if academic:
+        technical_hits = 0
+        if re.search(r"\b(?:Friedman|Wilcoxon|Kendall(?:'s)?\s+W|latent class analysis|LCA|Cram[eé]r(?:'s)?\s+V|chi-square|p\s*[<=>]|AIC|BIC|entropy|StepMix|SciPy|NumPy)\b", raw, re.I):
+            technical_hits += 1
+        if len(re.findall(r"\b\d+(?:\.\d+)?%\b", raw)) >= 5 or len(re.findall(r"\bp\s*[<=>]\s*\d", raw, re.I)) >= 2:
+            technical_hits += 1
+        if re.search(r"\b(?:World Bank|Global Public Procurement Database|GPPD|OECD|Yahoo Finance|Kenneth French)\b", raw, re.I):
+            technical_hits += 1
+        if technical_hits >= 3:
+            _add(ev, "Dense domain-specific methods, exact statistics and named data sources provide counter-evidence to style-only cues.", "weak")
+        elif technical_hits == 2:
+            _add(ev, "Domain-specific technical detail provides some counter-evidence to generic-style cues.", "weak")
+    return _score(ev), ev
+
+
 def ai_check_report(text: str, global_report: dict[str, Any] | None = None, academic: bool = True) -> dict[str, Any]:
     raw = str(text or "")
-    sentences = _sentences(raw)
-    prose_sentences = [sentence for sentence in sentences if _is_prose_sentence(sentence)] or sentences
-    paragraphs = _paragraphs(raw)
-    words = _words(raw)
+    prose_sentences = _prose_sentences_from_text(raw)
+    if not prose_sentences:
+        prose_sentences = [s for s in _sentences(raw) if _is_prose_sentence(s)]
+    paragraphs = _prose_paragraphs_from_text(raw)
+    if not paragraphs:
+        paragraphs = _paragraphs(raw)
+    prose_text = "\n".join(prose_sentences)
+    words = _words(prose_text)
     wc = len(words)
     lengths = _sentence_lengths(prose_sentences)
     sent_cv = _cv(lengths)
@@ -327,124 +417,109 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     para_cv = _cv(paragraph_lengths)
     global_report = global_report or {}
 
+    # J is deliberately scored before A-I to counter one-sided anchoring.
+    j_score, j_evidence = _humanness_counter_evidence(raw, prose_sentences, academic)
     signals: list[dict[str, Any]] = []
 
     # A. Perplexity / predictability proxy
     ev: list[dict[str, str]] = []
-    vocab_hits = []
-    low = raw.lower()
+    low = prose_text.lower()
+    vocab_hits: list[str] = []
     for item in AI_VOCAB:
-        # "robust" is ordinary technical vocabulary in scholarly statistics,
-        # econometrics and methods writing. Treating it as an AI tell creates
-        # false positives such as "Huber robust regression".
-        if academic and item == "robust":
+        if academic and item in {"robust", "comprehensive"}:
             continue
         count = low.count(item)
-        if count:
-            vocab_hits.extend([item] * count)
-    if vocab_hits:
+        vocab_hits.extend([item] * count)
+    vocab_density = len(vocab_hits) / max(1, wc) * 1000
+    if vocab_hits and (len(set(vocab_hits)) >= 2 or vocab_density >= 2.5):
         unique = list(dict.fromkeys(vocab_hits))
-        sev = "strong" if len(vocab_hits) >= 4 else "moderate" if len(vocab_hits) >= 2 else "weak"
-        _add(ev, f"AI-associated safe vocabulary: {', '.join(unique[:7])}", sev)
-    generic_adj = re.findall(r"\b(?:significant|notable|key|important)\s+(?:improvements?|progress|challenges?|issues?|factors?)\b", raw, re.I)
-    if generic_adj:
-        _add(ev, f"Generic evaluative wording appears {len(generic_adj)} time(s), e.g. “{_quote(generic_adj[0])}”.", "moderate" if len(generic_adj) >= 2 else "weak")
-    safe_hedges = re.findall(r"\b(?:can often lead to|may result in|tends? to)\b", raw, re.I)
-    if safe_hedges:
-        _add(ev, f"Predictability-increasing safe hedge: “{safe_hedges[0]}”.", "weak")
+        if vocab_density >= 6 or len(vocab_hits) >= 8:
+            sev = "strong"
+        elif vocab_density >= 3 or len(vocab_hits) >= 4:
+            sev = "moderate"
+        else:
+            sev = "weak"
+        _add(ev, f"AI-associated safe vocabulary occurs at {vocab_density:.1f} per 1,000 words: {', '.join(unique[:7])}", sev)
+    generic_adj = re.findall(r"\b(?:significant|notable|key|important)\s+(?:improvements?|progress|challenges?|issues?|factors?)\b", prose_text, re.I)
+    if len(generic_adj) >= (4 if academic else 2):
+        _add(ev, f"Generic evaluative wording appears {len(generic_adj)} time(s), e.g. “{_quote(generic_adj[0])}”.", "moderate" if len(generic_adj) >= 6 else "weak")
     score = _score(ev)
     signals.append({"key": "A", "name": "Perplexity", "score": score, "evidence": ev, "summary": "Safe/predictable vocabulary and generic phrasing."})
 
-    # B. Burstiness deficit
+    # B. Burstiness deficit. In a long paper, one coincidental 3-sentence cluster is not enough.
     ev = []
+    cluster_count = 0
     for i in range(max(0, len(lengths) - 2)):
         window = lengths[i:i+3]
         if len(window) == 3 and max(window) - min(window) <= 5:
-            _add(ev, f"Three consecutive sentence lengths are tightly clustered: {window[0]}, {window[1]}, {window[2]} words.", "moderate")
-            break
-    if len(lengths) >= 6 and sent_cv < 0.22:
+            cluster_count += 1
+    cluster_share = cluster_count / max(1, len(lengths) - 2)
+    if len(lengths) < 8 and cluster_count:
+        _add(ev, f"Three consecutive sentence lengths are tightly clustered: {lengths[:3] if len(lengths)>=3 else lengths}.", "moderate")
+    elif cluster_share >= 0.28:
+        _add(ev, f"Tightly clustered three-sentence windows occur in {cluster_share:.0%} of the passage.", "moderate")
+    elif cluster_share >= 0.14 and sent_cv < 0.45:
+        _add(ev, f"Repeated sentence-length clustering occurs in {cluster_share:.0%} of the passage.", "weak")
+    if len(lengths) >= 8 and sent_cv < 0.22:
         _add(ev, f"Sentence-length variation is low (CV {sent_cv:.2f}).", "moderate")
-    elif len(lengths) >= 5 and sent_cv < 0.32:
+    elif len(lengths) >= 8 and sent_cv < 0.30:
         _add(ev, f"Sentence rhythm is fairly uniform (CV {sent_cv:.2f}).", "weak")
-    if wc >= 150 and lengths and min(lengths) >= 8:
+    if not academic and wc >= 150 and lengths and min(lengths) >= 8:
         _add(ev, "No sentence shorter than 8 words appears in this long passage.", "weak")
-    if wc >= 220 and not any(0 < n < 6 for n in lengths):
-        _add(ev, "No short fragment-like sentence appears for emphasis.", "weak")
-    short_run = 0
-    for n in lengths:
-        short_run = short_run + 1 if n < 7 else 0
-        if short_run >= 3:
-            _add(ev, "Three or more very short sentences occur consecutively without a longer counterweight.", "weak")
-            break
     score = _score(ev)
     signals.append({"key": "B", "name": "Burstiness", "score": score, "evidence": ev, "summary": f"Sentence-length CV {sent_cv:.2f}; rhythm variation check."})
 
-    # C. Hedge density, down-weighted for scholarly register
+    # C. Hedge density, calibrated to density rather than raw count.
     ev = []
     hedge_matches: list[str] = []
     for pattern in HEDGE_PATTERNS:
-        hedge_matches.extend(m.group(0) for m in re.finditer(pattern, raw, re.I))
-    if hedge_matches:
-        density = len(hedge_matches) / max(1, wc) * 1000
-        sev = "moderate" if density >= (12 if academic else 8) or len(hedge_matches) >= 5 else "weak"
-        _add(ev, f"Hedge language appears {len(hedge_matches)} time(s), including “{_quote(hedge_matches[0])}”.", sev)
-    diplomatic = re.findall(r"\bwhile\b.{0,120}\b(?:benefits?|advantages?)\b.{0,120}\b(?:challenges?|limitations?|drawbacks?)\b", raw, re.I | re.S)
-    if diplomatic:
-        _add(ev, f"Balanced diplomatic framing: “{_quote(diplomatic[0])}”.", "weak" if academic else "moderate")
+        hedge_matches.extend(m.group(0) for m in re.finditer(pattern, prose_text, re.I))
+    hedge_density = len(hedge_matches) / max(1, wc) * 1000
+    if hedge_matches and (hedge_density >= (3.0 if academic else 2.0) or len(hedge_matches) >= (7 if academic else 5)):
+        sev = "moderate" if hedge_density >= (7 if academic else 5) else "weak"
+        _add(ev, f"Hedge language appears {len(hedge_matches)} time(s), {hedge_density:.1f} per 1,000 words, including “{_quote(hedge_matches[0])}”.", sev)
     score = _score(ev)
     signals.append({"key": "C", "name": "Hedge density", "score": score, "evidence": ev, "summary": "Institutional softening and reflexive uncertainty."})
 
-    # D. Structural tells
+    # D. Structural tells. Numerical result summaries are not treated as rhetorical tricolons.
     ev = []
     bullet_lines = [line for line in raw.splitlines() if re.match(r"\s*(?:[-*•]|\d+[.)])\s+", line)]
     bullet_words = sum(len(_words(line)) for line in bullet_lines)
     bullet_share = bullet_words / max(1, wc)
     if (not academic and len(bullet_lines) >= 5) or (academic and len(bullet_lines) >= 12 and bullet_share >= 0.45):
-        _add(ev, f"Structured list contains {len(bullet_lines)} items and occupies {bullet_share:.0%} of the passage.", "weak")
-    if re.search(r"(?:^|\n)\s*(?:In conclusion|To summarize|In summary)\b", raw, re.I):
+        _add(ev, f"Structured list contains {len(bullet_lines)} items and occupies {bullet_share:.0%} of prose.", "weak")
+    if re.search(r"(?:^|\n)\s*(?:In conclusion|To summarize|In summary)\b", prose_text, re.I):
         _add(ev, "Formulaic conclusion opener detected.", "moderate")
-    if re.search(r"(?:^|\n)\s*In this (?:post|article|section|chapter) I will\b", raw, re.I):
-        _add(ev, "Formulaic 'In this … I will' opener detected.", "moderate")
-    tricolons = [sentence for sentence in prose_sentences if _tricolon_like(sentence)]
-    if tricolons:
-        tri_severity = "strong" if len(tricolons) >= 2 else ("weak" if academic else "moderate")
-        _add(ev, f"Symmetrical three-part construction: “{_quote(tricolons[0])}”.", tri_severity)
+    tricolons = []
+    for sentence in prose_sentences:
+        numeric_count = len(NUMBER_RE.findall(sentence))
+        if numeric_count >= 3:
+            continue
+        if _tricolon_like(sentence):
+            tricolons.append(sentence)
+    if len(tricolons) >= 2:
+        _add(ev, f"Repeated symmetrical three-part construction, e.g. “{_quote(tricolons[0])}”.", "moderate" if academic else "strong")
+    elif tricolons and not academic:
+        _add(ev, f"Symmetrical three-part construction: “{_quote(tricolons[0])}”.", "moderate")
     straw = next((s for s in prose_sentences if DIMINISHMENT_RE.search(s)), None)
     if straw:
-        _add(ev, f"Strawman/diminishment pivot: “{_quote(straw)}”.", "moderate")
-    if len(paragraph_lengths) >= 5 and para_cv < 0.20:
-        _add(ev, f"Paragraph lengths are unusually even (CV {para_cv:.2f}), consistent with a templated paragraph-per-idea arc.", "moderate")
-    opening_counts = Counter(" ".join(_words(sentence)[:2]) for sentence in prose_sentences if len(_words(sentence)) >= 2)
-    repeated_openings = sum(count - 1 for opening, count in opening_counts.items() if opening and count >= 3)
-    repeated_opening_share = repeated_openings / max(1, len(prose_sentences))
+        _add(ev, f"Not-only/not-X rhetorical pivot: “{_quote(straw)}”.", "weak" if academic else "moderate")
+    if len(paragraph_lengths) >= 5 and para_cv < 0.18:
+        _add(ev, f"Paragraph lengths are unusually even (CV {para_cv:.2f}).", "weak" if academic else "moderate")
     repeated_frames = int(global_report.get("repeated_frame_density") or 0)
-    if repeated_openings >= 5 and repeated_opening_share >= 0.12:
-        _add(ev, f"Repeated prose openings account for about {repeated_opening_share:.0%} of sentences ({repeated_openings} repeated instances).", "moderate")
-    elif repeated_openings >= 4 and repeated_opening_share >= 0.08:
-        _add(ev, f"Repeated prose openings account for about {repeated_opening_share:.0%} of sentences ({repeated_openings} repeated instances).", "weak")
-    if repeated_frames >= 4:
-        _add(ev, f"Repeated framing phrases occur at elevated density ({repeated_frames}).", "moderate")
+    if repeated_frames >= (7 if academic else 4):
+        _add(ev, f"Repeated framing phrases occur at elevated density ({repeated_frames}).", "weak" if academic else "moderate")
     score = _score(ev)
     signals.append({"key": "D", "name": "Structural tells", "score": score, "evidence": ev, "summary": "Template-like document architecture and symmetry."})
 
     # E. Specificity deficit
     ev = []
     passive_hits = [s for s in prose_sentences if PASSIVE_RE.search(s)]
-    if passive_hits:
-        _add(ev, f"Actor-obscuring evidence frame: “{_quote(passive_hits[0])}”.", "moderate" if len(passive_hits) >= 2 else "weak")
+    if len(passive_hits) >= 2:
+        _add(ev, f"Actor-obscuring evidence frame: “{_quote(passive_hits[0])}”.", "moderate")
     universal_hits = [s for s in prose_sentences if UNIVERSAL_RE.search(s)]
-    if universal_hits:
-        _add(ev, f"Universalist framing: “{_quote(universal_hits[0])}”.", "moderate" if len(universal_hits) >= 2 else "weak")
-    abstract_candidates = []
-    for s in prose_sentences:
-        if re.search(r"\b(?:many|various|several|numerous) (?:organizations|institutions|studies|researchers|factors|challenges)\b", s, re.I):
-            if not NUMBER_RE.search(s) and not YEAR_RE.search(s) and not CITATION_RE.search(s):
-                abstract_candidates.append(s)
-    if abstract_candidates:
-        _add(ev, f"Unanchored abstract claim: “{_quote(abstract_candidates[0])}”.", "moderate")
-    generic_examples = GENERIC_EXAMPLE_RE.findall(raw)
-    if generic_examples:
-        _add(ev, f"Canonical generic example(s) used without clear context: {', '.join(sorted(set(generic_examples)))}.", "weak")
+    if len(universal_hits) >= 2:
+        _add(ev, f"Universalist framing: “{_quote(universal_hits[0])}”.", "moderate")
     score = _score(ev)
     signals.append({"key": "E", "name": "Specificity", "score": score, "evidence": ev, "summary": "Concrete names, actors, numbers, dates and examples."})
 
@@ -453,175 +528,165 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     strong_hits: list[str] = []
     moderate_hits: list[str] = []
     for pattern in TRANSITION_STRONG:
-        strong_hits.extend(m.group(0) for m in re.finditer(pattern, raw, re.I | re.M))
+        strong_hits.extend(m.group(0) for m in re.finditer(pattern, prose_text, re.I | re.M))
     for pattern in TRANSITION_MODERATE:
-        moderate_hits.extend(m.group(0) for m in re.finditer(pattern, raw, re.I | re.M))
+        moderate_hits.extend(m.group(0) for m in re.finditer(pattern, prose_text, re.I | re.M))
     if strong_hits:
         _add(ev, f"Strong formulaic transition(s): {', '.join('“'+_quote(x,45)+'”' for x in strong_hits[:4])}.", "strong" if len(strong_hits) >= 2 else "moderate")
-    if moderate_hits:
-        _add(ev, f"Formulaic pivot/announcement(s): {', '.join('“'+_quote(x,45)+'”' for x in moderate_hits[:4])}.", "moderate" if len(moderate_hits) >= 2 else "weak")
-    however_count = len(re.findall(r"(?:^|\n)\s*However,", raw, re.I))
-    if wc and however_count > max(1, wc // 200):
-        _add(ev, f"'However,' opens {however_count} sentence/paragraph(s), above the repeated-transition threshold.", "moderate")
+    if len(moderate_hits) >= 2:
+        _add(ev, f"Repeated formulaic pivot/announcement(s): {', '.join('“'+_quote(x,45)+'”' for x in moderate_hits[:4])}.", "moderate")
     score = _score(ev)
     signals.append({"key": "F", "name": "Transitions", "score": score, "evidence": ev, "summary": "Mechanical connective tissue and reveal/announcement phrasing."})
 
-    # G. Punctuation fingerprint, academic calibration
+    # G. Punctuation fingerprint. Count punctuation only in prose, never table cells.
     ev = []
-    em_count = raw.count("—")
+    em_count = prose_text.count("—")
     if em_count > max(1, wc // 300):
-        _add(ev, f"Em dashes appear {em_count} time(s), above the length-adjusted threshold.", "moderate")
-    if re.search(r"—[^—\n]{1,120}—", raw):
-        _add(ev, "Double em-dash wrapping appears as a dramatic aside.", "strong")
-    punctuation_text = CITATION_RE.sub("", raw)
+        _add(ev, f"Em dashes appear {em_count} time(s), above the prose-length threshold.", "moderate")
+    if re.search(r"—[^—\n]{1,120}—", prose_text):
+        _add(ev, "Double em-dash wrapping appears as a dramatic aside.", "weak" if academic else "strong")
+    punctuation_text = CITATION_RE.sub("", prose_text)
     semicolons = punctuation_text.count(";")
     if not academic and semicolons:
-        _add(ev, f"Semicolons linking clauses appear {semicolons} time(s) in non-academic prose.", "weak" if semicolons == 1 else "moderate")
-    elif academic and semicolons >= max(5, wc // 140):
+        _add(ev, f"Semicolons linking clauses appear {semicolons} time(s).", "weak" if semicolons == 1 else "moderate")
+    elif academic and semicolons >= max(8, wc // 100):
         _add(ev, f"Semicolon use is unusually dense even for academic prose ({semicolons} instances).", "weak")
-    colon_hits = re.findall(r"\b(?:The problem|The answer|The rule|The key insight|The approach):", raw, re.I)
+    colon_hits = re.findall(r"\b(?:The problem|The answer|The rule|The key insight|The approach):", prose_text, re.I)
     if colon_hits:
         _add(ev, f"Announcement-colon construction: “{colon_hits[0]}”.", "moderate")
     score = _score(ev)
     signals.append({"key": "G", "name": "Punctuation", "score": score, "evidence": ev, "summary": "Em-dash, semicolon and announcement-colon patterns."})
 
-    # H. Voice / register, heavily calibrated for scholarly prose
+    # H. Voice/register, heavily down-weighted for academic prose.
     ev = []
-    informal = bool(INFORMAL_MARKER_RE.search(raw))
+    informal = bool(INFORMAL_MARKER_RE.search(prose_text))
     complete_ratio = sum(1 for s in prose_sentences if re.search(r"[.!?]$", s)) / max(1, len(prose_sentences))
     if informal and len(prose_sentences) >= 4 and complete_ratio > 0.9:
-        _add(ev, "Informal markers are layered over consistently polished complete sentences (register collapse).", "strong")
-    if re.search(r"\b(?:Happy to jump on a call if that(?:'|’)s easier|Let me know if you have any questions|Feel free to reach out)\b", raw, re.I):
-        _add(ev, "Templated professional closer detected.", "weak")
-    # In academic prose, absence of first/second person is normal, so only flag a cluster of missing human traces weakly.
-    traces = sum(bool(rx.search(raw)) for rx in (FIRST_PERSON_RE, SECOND_PERSON_RE, RHETORICAL_Q_RE, SELF_CORRECTION_RE))
+        _add(ev, "Informal markers sit on top of unusually polished complete-sentence prose.", "strong")
+    traces = sum(bool(rx.search(prose_text)) for rx in (FIRST_PERSON_RE, SECOND_PERSON_RE, RHETORICAL_Q_RE, SELF_CORRECTION_RE))
     if wc >= 300 and traces == 0 and not academic:
         _add(ev, "Long passage contains no first/second person, rhetorical question, or self-correction trace.", "moderate")
-    elif wc >= 450 and traces == 0 and academic:
-        _add(ev, "Long passage maintains a perfectly neutral register with no local voice variation; this is weak evidence in scholarly prose.", "weak")
     score = _score(ev)
     signals.append({"key": "H", "name": "Voice / register", "score": score, "evidence": ev, "summary": "Human traces, register variation and templated professional voice."})
 
-    # I. Rhetorical scaffolding
+    # I. Rhetorical scaffolding: corroborating evidence only in scholarly prose.
     ev = []
     patterns = [
-        (SETUP_RE, "Setup/revelation announcement sentence", "moderate"),
-        (MORE_THAN_RE, "'More X than Y' comparative framing", "moderate"),
-        (DIMINISHMENT_RE, "'Not X but Y' diminishment framing", "moderate"),
-        (TURNS_OUT_RE, "'Turns out' reveal pivot", "moderate"),
-        (BINARY_RE, "Clean binary 'either/or' framing", "moderate"),
-        (BINARY_CHOICE_RE, "Choice/trade-off framed as a clean 'between X and Y' binary", "moderate"),
-        (ACTUAL_WORK_RE, "'is the actual/real work' landing phrase", "moderate"),
-        (PATTERN_ANNOUNCEMENT_RE, "Pattern/insight announcement frame", "moderate"),
-        (PARTICIPIAL_REFRAME_RE, "Participial reframe pivot", "moderate"),
-        (COMPOSED_PARENT_RE, "Composed self-aware parenthetical", "moderate"),
-        (BALANCED_PAREN_RE, "Balanced parenthetical pair", "moderate"),
+        (SETUP_RE, "Setup/revelation announcement sentence"),
+        (MORE_THAN_RE, "'More X than Y' comparative framing"),
+        (DIMINISHMENT_RE, "'Not X but Y' diminishment framing"),
+        (TURNS_OUT_RE, "'Turns out' reveal pivot"),
+        (BINARY_RE, "Clean binary 'either/or' framing"),
+        (BINARY_CHOICE_RE, "Choice/trade-off framed as a clean binary"),
+        (ACTUAL_WORK_RE, "'is the actual/real work' landing phrase"),
+        (PATTERN_ANNOUNCEMENT_RE, "Pattern/insight announcement frame"),
     ]
-    for regex, label, severity in patterns:
-        match = regex.search(raw)
-        if match:
-            containing = next((s for s in prose_sentences if match.group(0).lower() in s.lower()), match.group(0))
-            _add(ev, f"{label}: “{_quote(containing)}”.", severity)
-    if prose_sentences and THESIS_FIRST_RE.search(prose_sentences[0]):
-        _add(ev, f"Thesis-first opener: “{_quote(prose_sentences[0])}”.", "moderate")
+    for regex, label in patterns:
+        matches = [s for s in prose_sentences if regex.search(s)]
+        if matches and (not academic or len(matches) >= 2):
+            _add(ev, f"{label}: “{_quote(matches[0])}”.", "weak" if academic else "moderate")
     for opener, count in _anaphora(prose_sentences):
-        _add(ev, f"Repeated sentence starter “{opener}” occurs {count} times consecutively.", "moderate")
-        break
-    question_list = PARALLEL_QUESTION_LIST_RE.search(raw)
-    if question_list:
-        _add(ev, f"Within-sentence anaphoric parallel list: “{_quote(question_list.group(0))}”.", "strong" if not academic else "moderate")
-    reason_run = _parallel_reason_run(prose_sentences)
-    if reason_run >= 3:
-        _add(ev, f"Parallel reason-chain structure runs across {reason_run} consecutive sentences.", "moderate")
-    if len(prose_sentences) >= 8 and sent_cv < 0.28 and len(paragraphs) >= 3 and para_cv < 0.28:
-        _add(ev, "Local coherence/rhythm is unusually smooth across both sentence and paragraph scales.", "moderate")
-    short_closers = [sentence for sentence in prose_sentences if 4 <= len(_words(sentence)) <= 7 and APOSTROPHE_CLOSER_RE.match(sentence)]
-    if short_closers:
-        _add(ev, f"Mini-aphorism closer pattern: “{_quote(short_closers[-1])}”.", "weak" if academic else "moderate")
+        if count >= 3:
+            _add(ev, f"Repeated sentence starter “{opener}” occurs {count} times consecutively.", "moderate" if not academic else "weak")
+            break
+    question_matches = [s for s in prose_sentences if PARALLEL_QUESTION_LIST_RE.search(s)]
+    if len(question_matches) >= 2:
+        _add(ev, f"Repeated within-sentence parallel question lists, e.g. “{_quote(question_matches[0])}”.", "moderate" if academic else "strong")
+    elif question_matches and not academic:
+        _add(ev, f"Within-sentence parallel question list: “{_quote(question_matches[0])}”.", "moderate")
+    if len(prose_sentences) >= 8 and sent_cv < 0.25 and len(paragraphs) >= 3 and para_cv < 0.25:
+        _add(ev, "Local coherence/rhythm is unusually smooth across sentence and paragraph scales.", "weak" if academic else "moderate")
     score = _score(ev)
     signals.append({"key": "I", "name": "Rhetorical scaffolding", "score": score, "evidence": ev, "summary": "Over-composed rhetorical devices and smoothness patterns."})
 
-    scores = [int(signal["score"]) for signal in signals]
-    total = sum(scores)
-    paragraph_ai_pct, paragraph_risks = _paragraph_ai_profile(paragraphs, academic=academic)
-
-    # Keep the 0–27 forensic category score as an explanation layer, but make
-    # the public 0–100 index depend on both document-level corroboration and
-    # sentence-level evidence. This prevents a confusing result such as a 38%
-    # AI signal alongside zero locally flagged sentences.
-    category_pct = round(total / 27 * 100)
-    evidence_load = 0
+    raw_total = sum(int(signal["score"]) for signal in signals)
+    weighted_parts = []
     for signal in signals:
-        points = sum(SEVERITY_WEIGHT.get(item.get("severity", "weak"), 1) for item in signal.get("evidence", []))
-        evidence_load += min(6, points)
-    evidence_pct = round(evidence_load / (9 * 6) * 100)
+        weight = CATEGORY_WEIGHTS[signal["key"]]
+        weighted = round(int(signal["score"]) * weight, 2)
+        signal["weight"] = weight
+        signal["weighted_score"] = weighted
+        weighted_parts.append(weighted)
+    weighted_raw_total = round(sum(weighted_parts), 2)
+    scaled_score = weighted_raw_total * (27 / WEIGHTED_MAX) if WEIGHTED_MAX else 0.0
+    net_score = max(0.0, min(27.0, scaled_score - j_score))
+    displayed_net_score = round(net_score, 1)
+    ai_pct = max(0, min(100, round(displayed_net_score / 27 * 100)))
+    verdict = _verdict_from_index(ai_pct)
+
+    conditional_share = sum(signal["weighted_score"] for signal in signals if signal["key"] in {"C", "H", "I"}) / max(0.001, weighted_raw_total)
+    confidence = _confidence(prose_text, round(net_score), [int(s["score"]) for s in signals])
+    reliability_flag = None
+    if conditional_share > 0.60 and weighted_raw_total > 0:
+        reliability_flag = ">60% of weighted score comes from register-dependent C/H/I signals; confidence capped at Medium."
+        if confidence == "High":
+            confidence = "Medium"
+
+    paragraph_ai_pct, paragraph_risks = _paragraph_ai_profile(paragraphs, academic=academic)
     sentence_risks = [sentence_ai_signal(sentence, academic=academic)[0] for sentence in prose_sentences]
     flagged_sentence_count = sum(1 for risk in sentence_risks if risk >= 25)
     moderate_sentence_count = sum(1 for risk in sentence_risks if risk >= 45)
     high_sentence_count = sum(1 for risk in sentence_risks if risk >= 70)
-    if sentence_risks:
-        ordered_risks = sorted(sentence_risks)
-        p90 = ordered_risks[min(len(ordered_risks) - 1, round((len(ordered_risks) - 1) * 0.90))]
-        mean_risk = sum(sentence_risks) / len(sentence_risks)
-        flagged_share = flagged_sentence_count / len(sentence_risks)
-        sentence_pct = round(mean_risk * 0.45 + p90 * 0.35 + flagged_share * 100 * 0.20)
-    else:
-        sentence_pct = 0
 
-    ai_pct = round(category_pct * 0.55 + evidence_pct * 0.15 + sentence_pct * 0.20 + paragraph_ai_pct * 0.10)
-    # A strong document-wide finding may legitimately exist without a single
-    # extreme sentence, but if every prose sentence is below the low-signal
-    # threshold the headline score should stay out of the strong-AI range.
-    if flagged_sentence_count == 0 and total < 14:
-        ai_pct = min(ai_pct, 34)
-    if total >= 18 and flagged_sentence_count:
-        ai_pct = max(55, ai_pct)
-    elif total <= 4 and flagged_sentence_count == 0:
-        ai_pct = min(19, ai_pct)
-    ai_pct = max(0, min(100, ai_pct))
-    verdict = _verdict_from_index(ai_pct)
-    confidence = _confidence(raw, total, scores)
+    # Paragraph/section profiling surfaces mixed-text hotspots without contaminating
+    # the document score with headings and tables.
+    segment_profile: list[dict[str, Any]] = []
+    if len(paragraphs) >= 3:
+        for index, paragraph in enumerate(paragraphs[:80]):
+            local_risks = [sentence_ai_signal(s, academic=academic)[0] for s in _sentences(paragraph) if _is_prose_sentence(s)]
+            peak = max(local_risks, default=0)
+            mean = sum(local_risks) / max(1, len(local_risks))
+            local_pct = min(100, round(peak * 0.65 + mean * 0.35))
+            segment_profile.append({"segment": index + 1, "ai_signal": local_pct, "label": _verdict_from_index(local_pct), "excerpt": _quote(paragraph, 120)})
 
-    calibration_notes = [
-        "The percentage is an AI-style signal index, not the percentage of words written by AI and not a calibrated authorship probability.",
-        "Different AI-writing detectors can return very different results on the same polished scholarly passage because they use different models, thresholds and training data.",
-        "Strong interpretation requires corroboration across several signal families and sentence-level evidence rather than a single stylistic cue.",
-        "Academic writing is calibrated to reduce penalties for legitimate hedging, neutral register, technical vocabulary, lists, tricolons and semicolon use.",
-    ]
-    if wc < 100:
-        calibration_notes.append("Short text under 100 words has fewer detectable signals; confidence is capped at Medium.")
-    if wc < 40:
-        calibration_notes.append("Very short text is especially unreliable for authorship inference.")
-
-    # Strongest signals in plain language.
-    ranked = sorted(signals, key=lambda x: (x["score"], len(x["evidence"])), reverse=True)
+    ranked = sorted(signals, key=lambda x: (x["weighted_score"], len(x["evidence"])), reverse=True)
     strongest = [s for s in ranked if s["score"] > 0][:3]
     if strongest:
-        gave_away = " The strongest signals were " + ", ".join(f"{s['name']} ({s['score']}/3)" for s in strongest) + "."
+        gave_away = "The strongest remaining signals were " + ", ".join(f"{s['name']} ({s['score']}/3; weighted {s['weighted_score']:.2f})" for s in strongest) + "."
     else:
-        gave_away = " No category produced a meaningful AI-style signal."
+        gave_away = "No category produced a meaningful AI-style signal."
+
+    calibration_notes = [
+        "AI Signal is derived directly from the weighted forensic net score, so the headline percentage and category statistics reconcile.",
+        "The nine visible categories are weighted by reliability; rhetorical and register-based signals carry less weight in scholarly prose.",
+        "Humanness counter-evidence is scored separately and subtracted before the final 0–27 net score.",
+        "Tables, form rows, headings and table punctuation are excluded from prose-style scoring.",
+        "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a style-screening indicator, not proof of authorship.",
+    ]
+    if wc < 100:
+        calibration_notes.append("Text under 100 prose words has limited evidence; confidence is capped at Medium.")
+        if confidence == "High":
+            confidence = "Medium"
 
     return {
         "verdict": verdict,
         "confidence": confidence,
-        "overall_score": total,
+        "overall_score": displayed_net_score,
+        "net_score_exact": round(net_score, 3),
         "max_score": 27,
-        "forensic_verdict": _verdict(total),
+        "raw_category_score": raw_total,
+        "weighted_raw_score": weighted_raw_total,
+        "scaled_score_before_humanness": round(scaled_score, 2),
+        "humanness_counter_score": j_score,
+        "humanness_counter_evidence": j_evidence,
+        "forensic_verdict": _verdict(round(net_score)),
         "ai_detection_percentage": ai_pct,
         "signal_level": verdict,
         "signals": signals,
-        "what_gave_it_away": gave_away.strip(),
+        "what_gave_it_away": gave_away,
         "calibration_notes": calibration_notes,
         "word_count": wc,
         "sentence_lengths": lengths,
-        "category_signal_percentage": category_pct,
-        "evidence_signal_percentage": evidence_pct,
-        "sentence_signal_percentage": sentence_pct,
+        "category_signal_percentage": ai_pct,
+        "evidence_signal_percentage": ai_pct,
+        "sentence_signal_percentage": round(sum(sentence_risks) / max(1, len(sentence_risks))) if sentence_risks else 0,
         "flagged_sentence_count": flagged_sentence_count,
         "moderate_sentence_count": moderate_sentence_count,
         "high_sentence_count": high_sentence_count,
         "paragraph_ai_signal_percentage": paragraph_ai_pct,
         "paragraph_signal_profile": paragraph_risks,
+        "segment_profile": segment_profile,
+        "reliability_flag": reliability_flag,
         "detector_variability_notice": (
             "AI-writing detectors can disagree substantially, especially on formal academic prose. "
             "Use this score as a style-screening indicator, not proof of authorship."
