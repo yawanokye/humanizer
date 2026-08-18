@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.3.0">
+  <link rel="stylesheet" href="/static/style.css?v=2.4.1">
 </head>
 <body>
   <header class="topbar">
@@ -13,7 +13,7 @@
       <h1>Scholarly Humanizer</h1>
       <p class="subtitle">Improve natural scholarly voice while protecting facts, citations, numbers, headings and placeholders.</p>
     </div>
-    <div id="modelStatus" class="status-pill">Checking refinement service…</div>
+    <button id="developerAccessBtn" class="ghost developer-access" type="button" hidden>Developer</button>
   </header>
 
   <main class="layout">
@@ -39,22 +39,31 @@
           </select>
           <input id="useModel" type="checkbox" hidden aria-hidden="true" tabindex="-1">
         </label>
-        <label id="engine2ModelWrap" class="engine2-setting" hidden>Engine 2 model
+        <label id="engine2ModelWrap" class="engine2-setting" hidden>Engine 2 refinement level
           <select id="engine2Model">
-            <option value="gpt-5.6-terra" selected>GPT-5.6 Terra, recommended</option>
-            <option value="gpt-5.6-luna">GPT-5.6 Luna, economy</option>
+            <option value="v1">V1 (Light)</option>
+            <option value="v2" selected>V2 (Moderate)</option>
           </select>
-          <small id="engine2Hint">Select Engine 2 to use the configured OpenAI API key.</small>
+          <small id="engine2Hint">Select an API refinement level.</small>
         </label>
         <button id="analyseBtn" class="secondary">Detect AI</button>
         <button id="humanizeBtn" class="primary">Humanize scholarly text</button>
         <button id="clearBtn" class="ghost">Clear and start new</button>
       </div>
       <p id="message" class="message" aria-live="polite"></p>
+      <div id="activityProgress" class="activity-progress" role="status" aria-live="polite" aria-atomic="true" hidden>
+        <div id="activityRing" class="activity-ring" style="--activity-angle:0deg">
+          <span id="activityPercent">0%</span>
+        </div>
+        <div class="activity-progress-copy">
+          <strong id="activityTitle">Working</strong>
+          <span id="activityStage">Preparing request…</span>
+        </div>
+      </div>
     </section>
 
     <aside class="dashboard card">
-      <div class="section-head compact"><div><h2>AI Detector</h2><p>Section-aware screening: forensic A–I signals, statistical fingerprint, paragraph profile, document regularity, optional reference-LM features and held-out benchmark calibration</p></div></div>
+      <div class="section-head compact"><div><h2>AI Detector</h2><p>Section-aware screening of AI-style linguistic, statistical, paragraph and document patterns.</p></div></div>
       <div class="score-board">
         <section class="score-strip detector-score">
           <div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div>
@@ -73,8 +82,7 @@
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
         <div><small>Weighted A–I score</small><strong id="forensicScore">—</strong></div>
         <div><small>Human-context evidence</small><strong id="humannessCounter">—</strong></div>
-        <div><small>Decision status</small><strong id="decisionStatus">—</strong></div>
-        <div><small>Score source</small><strong id="scoreSource">—</strong></div>
+        <div><small>Review status</small><strong id="decisionStatus">—</strong></div>
       </div>
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
@@ -85,8 +93,6 @@
         <div><span id="flaggedSegments">0</span><small>Flagged prose segments</small></div>
         <div><span id="statisticalFingerprint">0%</span><small>Statistical fingerprint</small></div>
         <div><span id="engineSignalTarget">—</span><small>Engine 3 target</small></div>
-        <div><span id="calibrationState">Fallback</span><small>Calibration</small></div>
-        <div><span id="referenceLmState">Proxy</span><small>Reference LM</small></div>
       </div>
       <div class="legend">
         <span><i class="dot natural"></i>Minimal signal</span><span><i class="dot low"></i>Low signal</span>
@@ -99,10 +105,10 @@
     <section class="results card full">
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="detector">AI signal breakdown</button>
-        <button class="tab" data-tab="highlight">AI sentence map</button>
+        <button class="tab" data-tab="highlight">AI red/green map</button>
         <button class="tab" data-tab="signalcolours">Signal-coloured text</button>
         <button class="tab" data-tab="statistical">Statistical fingerprint</button>
-        <button class="tab" data-tab="calibration">Calibration & probability</button>
+        <button id="calibrationTab" class="tab developer-only" data-tab="calibration" hidden>Calibration & probability</button>
         <button class="tab" data-tab="sections">Section profile</button>
         <button class="tab" data-tab="revised">Humanized text</button>
         <button class="tab" data-tab="rewriteaudit">Rewrite audit</button>
@@ -113,8 +119,9 @@
       </div>
       <div id="detectorPanel" class="panel active"><div id="detectorSignals" class="detector-signals empty-state">Run AI detection to see the A–I forensic breakdown.</div></div>
       <div id="highlightPanel" class="panel">
-        <div id="highlightedText" class="document-view empty-state">Run AI detection to colour sentences by AI-style signal strength.</div>
-        <div id="segmentTip" class="segment-tip">Select a coloured sentence to see which AI-style signals fired.</div>
+        <div class="binary-map-legend"><span><i class="binary-swatch ai"></i>AI-style signal detected</span><span><i class="binary-swatch clear"></i>No AI-style signal detected</span><span><i class="binary-swatch protected"></i>Protected/excluded structure</span></div>
+        <div id="highlightedText" class="document-view empty-state">Run AI detection to colour AI-signal areas red and no-signal areas green.</div>
+        <div id="segmentTip" class="segment-tip">Select a coloured sentence to see the evidence. Red means one or more AI-style signals were detected; green means none crossed the sentence threshold.</div>
       </div>
       <div id="signalcoloursPanel" class="panel">
         <div class="signal-colour-legend">
@@ -133,7 +140,7 @@
         <div id="preservationCertificate" class="preservation-certificate empty-state">A protected-content certificate will appear after humanization.</div>
         <div class="export-row">
           <button id="copyBtn" class="secondary">Copy text</button>
-          <button id="docxBtn" class="secondary">Export clean DOCX</button>
+          <button id="docxBtn" class="secondary">Export humanized text to Word (.docx)</button>
           <button id="annotatedDocxBtn" class="secondary">Export diagnostic DOCX</button>
           <button id="htmlBtn" class="secondary">Export signal-coloured HTML</button>
         </div>
@@ -162,14 +169,15 @@
             <label>QuillBot/Scribbr %<input id="benchmarkQuillbot" type="number" min="0" max="100" step="0.1"></label>
           </div>
           <p class="benchmark-note">The current Source text is added to the benchmark. External detector scores are optional metadata and are never treated as ground truth.</p>
-          <div class="export-row"><button id="addBenchmarkBtn" class="secondary">Add current text</button><button id="refreshBenchmarkBtn" class="secondary">Refresh status</button><button id="trainBenchmarkBtn" class="primary">Train/select model</button><button id="evaluateBenchmarkBtn" class="secondary">Evaluate active model</button><button id="adversarialAuditBtn" class="secondary">Robustness audit</button></div>
+          <div class="export-row"><button id="addBenchmarkBtn" class="secondary">Add current text</button><button id="refreshBenchmarkBtn" class="secondary">Refresh status</button><button id="trainBenchmarkBtn" class="primary">Train/select model</button><button id="evaluateBenchmarkBtn" class="secondary">Evaluate active model</button><button id="adversarialAuditBtn" class="secondary">Robustness audit</button><button id="driftBtn" class="secondary">Check drift</button><button id="rollbackModelBtn" class="secondary">Rollback model</button></div>
           <div id="benchmarkStatus" class="benchmark-status empty-state">Benchmark Lab status will appear here.</div>
+          <div id="modelRegistryStatus" class="benchmark-status empty-state">Model registry and drift information will appear here after developer authentication.</div>
         </div>
       </div>
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No sentence evidence yet.</div></div>
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=2.3.0"></script>
+  <script src="/static/app.js?v=2.4.1"></script>
 </body>
 </html>
