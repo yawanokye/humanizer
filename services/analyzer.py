@@ -9,6 +9,8 @@ from typing import Any
 
 from scholarly_humanizer import analyse_scholarly_style
 from services.ai_detector import ai_check_report, sentence_ai_signal
+from services.calibration import calibration_status, predict_probability
+from services.reference_lm import score_reference_lm
 
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=(?:[A-Z\[]|\*\*))")
 WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z’'-]*\b")
@@ -100,6 +102,7 @@ class SegmentDiagnostic:
     protected: bool = False
     signal_keys: list[str] | None = None
     primary_signal: str | None = None
+    section: str = "other"
 
 
 def _word_count(text: str) -> int:
@@ -145,6 +148,81 @@ def _cv(values: list[float]) -> float:
         return 0.0
     mean = sum(values) / len(values)
     return _std_dev(values) / mean if mean else 0.0
+
+
+SECTION_HEADING_RE = re.compile(
+    r"^(?:\d+(?:\.\d+){0,3}\.?\s+)?(?:"
+    r"abstract|executive summary|introduction|background|literature review|conceptual framework|"
+    r"materials? and methods?|methodology|methods?|data and methods?|results?|findings?|"
+    r"discussion|integrated discussion|results and discussion|discussion and recommendations?|"
+    r"conclusion|conclusions|limitations|recommendations?|references|works cited|bibliography|appendix|appendices)\b",
+    re.I,
+)
+
+
+def _normalise_section_heading(value: str) -> str:
+    clean = re.sub(r"^\d+(?:\.\d+){0,3}\.?\s+", "", str(value or "").strip()).lower()
+    if clean.startswith(("abstract", "executive summary")):
+        return "abstract"
+    if clean.startswith(("materials", "methodology", "method", "data and method")):
+        return "methods"
+    if clean.startswith(("results and discussion", "discussion", "integrated discussion")):
+        return "discussion"
+    if clean.startswith(("result", "finding")):
+        return "results"
+    if clean.startswith(("references", "works cited", "bibliography")):
+        return "references"
+    if clean.startswith(("appendix", "appendices")):
+        return "appendix"
+    if clean.startswith(("conclusion", "recommendation", "limitation")):
+        return "conclusion"
+    if clean.startswith(("introduction", "background", "literature review", "conceptual framework")):
+        return "intro_lit"
+    return "other"
+
+
+def _section_markers(text: str) -> list[tuple[int, str]]:
+    raw = str(text or "")
+    markers: list[tuple[int, str]] = [(0, "other")]
+    cursor = 0
+    for line in raw.splitlines(keepends=True):
+        core = line.rstrip("\r\n").strip()
+        if core and len(WORD_RE.findall(core)) <= 16 and SECTION_HEADING_RE.match(core):
+            markers.append((cursor, _normalise_section_heading(core)))
+        cursor += len(line)
+    return markers
+
+
+def _section_for_offset(markers: list[tuple[int, str]], offset: int) -> str:
+    section = "other"
+    for start, label in markers:
+        if start > offset:
+            break
+        section = label
+    return section
+
+
+def _section_profile(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    buckets: dict[str, list[int]] = {key: [] for key in ("abstract", "intro_lit", "methods", "results", "discussion", "conclusion", "other")}
+    for item in segments:
+        if item.get("protected"):
+            continue
+        section = str(item.get("section") or "other")
+        buckets.setdefault(section, []).append(int(item.get("risk") or 0))
+    profile: dict[str, Any] = {}
+    means: list[float] = []
+    for section, values in buckets.items():
+        mean = round(sum(values) / len(values), 2) if values else 0.0
+        profile[section] = {
+            "segment_count": len(values),
+            "mean_signal": mean,
+            "elevated_count": sum(1 for value in values if value >= 45),
+            "flagged_count": sum(1 for value in values if value >= 25),
+        }
+        if values:
+            means.append(mean)
+    profile["score_spread"] = round(max(means) - min(means), 2) if len(means) >= 2 else 0.0
+    return profile
 
 
 def _iter_sentences_with_offsets(text: str) -> list[tuple[int, int, int, int, str]]:
@@ -194,6 +272,8 @@ def _is_structural_segment(clean: str) -> bool:
     if not value:
         return True
     if "\t" in value or " | " in value:
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)*\.?", value):
         return True
     if PROTECTED_LINE_RE.match(value) or value.startswith("|") or "$$" in value or "```" in value:
         return True
@@ -605,6 +685,7 @@ def _signal_level_from_percentage(score: int) -> str:
 def analyse_segments(text: str) -> list[dict[str, Any]]:
     raw = str(text or "")
     positions = _iter_sentences_with_offsets(raw)
+    section_markers = _section_markers(raw)
     openings = Counter(_opening(item[4]) for item in positions if _opening(item[4]))
     paragraph_openings: Counter[str] = Counter()
     for paragraph_index, sentence_index, *_rest, sentence in positions:
@@ -621,7 +702,8 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
     results: list[SegmentDiagnostic] = []
     for global_index, (paragraph_index, sentence_index, start, end, sentence) in enumerate(positions):
         clean = sentence.strip()
-        protected = _is_structural_segment(clean)
+        section = _section_for_offset(section_markers, start)
+        protected = _is_structural_segment(clean) or section in {"references", "appendix"}
         reasons: list[str] = []
         risk = 0
         word_count = _word_count(clean)
@@ -640,6 +722,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
                 protected=True,
                 signal_keys=[],
                 primary_signal=None,
+                section=section,
             ))
             continue
 
@@ -723,6 +806,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             reasons=reasons,
             signal_keys=signal_keys,
             primary_signal=signal_keys[0] if signal_keys else None,
+            section=section,
         ))
     return [asdict(item) for item in results]
 
@@ -749,7 +833,54 @@ def build_highlighted_html(text: str, segments: list[dict[str, Any]] | None = No
     return "".join(pieces)
 
 
-def dashboard_report(text: str) -> dict[str, Any]:
+def _calibration_feature_vector(
+    detector: dict[str, Any],
+    statistical_fingerprint: int,
+    statistical_components: dict[str, int],
+    reference_lm: dict[str, Any],
+    section_profile: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    segment_count = max(1, int(detector.get("segment_count") or 0))
+    flagged_ratio = int(detector.get("flagged_segment_count") or 0) / segment_count
+    features = {
+        "forensic_pct": float(detector.get("category_signal_percentage") or 0),
+        "statistical_pct": float(statistical_fingerprint),
+        "paragraph_pct": float(detector.get("segment_signal_percentage") or 0),
+        "regularity_pct": float(detector.get("consistency_signal_percentage") or 0),
+        "perplexity_proxy": float(statistical_components.get("perplexity_proxy") or 0),
+        "burstiness": float(statistical_components.get("burstiness") or 0),
+        "token_distribution_proxy": float(statistical_components.get("token_probability_distribution_proxy") or 0),
+        "ngram_frequency": float(statistical_components.get("ngram_frequency") or 0),
+        "uniform_semantic_density": float(statistical_components.get("uniform_semantic_density") or 0),
+        "repetitive_syntactic_structures": float(statistical_components.get("repetitive_syntactic_structures") or 0),
+        "systemic_transitions": float(statistical_components.get("systemic_transitions") or 0),
+        "low_vocabulary_diversity": float(statistical_components.get("low_vocabulary_diversity") or 0),
+        "segment_p90": float(detector.get("segment_p90") or 0),
+        "flagged_segment_ratio": round(flagged_ratio * 100, 4),
+        "reference_perplexity": float(reference_lm.get("perplexity") or 0),
+        "reference_surprisal_mean": float(reference_lm.get("surprisal_mean") or 0),
+        "reference_surprisal_std": float(reference_lm.get("surprisal_std") or 0),
+        "reference_low_surprisal_share": float(reference_lm.get("low_surprisal_share") or 0) * 100,
+    }
+    sections = section_profile or {}
+    for key in ("abstract", "intro_lit", "methods", "results", "discussion", "conclusion", "other"):
+        features[f"section_{key}_mean"] = float((sections.get(key) or {}).get("mean_signal") or 0)
+    features["section_score_spread"] = float(sections.get("score_spread") or 0)
+    return features
+
+
+def _decision_status(ai_signal: int, layers: list[int], *, calibrated: bool) -> tuple[str, str]:
+    spread = max(layers, default=0) - min(layers, default=0)
+    if 40 <= ai_signal <= 60:
+        return "Indeterminate", "The score falls inside the abstention zone; do not force a human/AI conclusion."
+    if spread >= 50 and 20 <= ai_signal <= 80:
+        return "Indeterminate", "Detector layers disagree strongly; the document should be reviewed segment by segment."
+    if calibrated:
+        return "Calibrated estimate", "The headline score was produced by the installed labelled meta-classifier."
+    return "Screening estimate", "No trained calibration model is installed; the transparent ensemble is being used."
+
+
+def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any]:
     global_report = analyse_scholarly_style(text)
     segments = analyse_segments(text)
 
@@ -762,38 +893,68 @@ def dashboard_report(text: str) -> dict[str, Any]:
     category_concerns = _build_category_concerns(text, segments, global_report)
     statistical_fingerprint, statistical_components = _statistical_fingerprint(category_concerns)
     detector = ai_check_report(text, global_report=global_report, academic=True)
+    reference_lm = score_reference_lm(text)
+    section_profile = _section_profile(segments)
 
-    # v2.1 four-layer ensemble. The humanizer does not participate in this score.
     forensic_pct = int(detector.get("category_signal_percentage", 0))
     paragraph_pct = int(detector.get("segment_signal_percentage", 0))
     regularity_pct = int(detector.get("consistency_signal_percentage", 0))
+    layers = [forensic_pct, statistical_fingerprint, paragraph_pct, regularity_pct]
+
+    # Transparent ensemble remains the safe fallback. A trained calibration model
+    # can replace the headline score, but never silently: the score source is shown.
     base_ensemble = round(
         forensic_pct * 0.25
         + statistical_fingerprint * 0.35
         + paragraph_pct * 0.30
         + regularity_pct * 0.10
     )
-    corroborating_layers = sum(1 for value in (forensic_pct, statistical_fingerprint, paragraph_pct, regularity_pct) if value >= 35)
+    corroborating_layers = sum(1 for value in layers if value >= 35)
     corroboration_bonus = 8 if corroborating_layers >= 3 else 4 if corroborating_layers >= 2 else 0
-    ai_signal = max(0, min(100, base_ensemble + corroboration_bonus))
+    fallback_signal = max(0, min(100, base_ensemble + corroboration_bonus))
+
+    calibration = calibration_status()
+    features = _calibration_feature_vector(detector, statistical_fingerprint, statistical_components, reference_lm, section_profile)
+    meta_prediction = predict_probability(features) if use_calibrator and calibration.get("trained") else None
+    if meta_prediction:
+        ai_signal = int(meta_prediction["percentage"])
+        score_source = "calibrated_meta_classifier"
+    else:
+        ai_signal = fallback_signal
+        score_source = "transparent_four_layer_ensemble"
+
+    decision_status, decision_reason = _decision_status(ai_signal, layers, calibrated=bool(meta_prediction))
+    if decision_status == "Indeterminate" and detector.get("confidence") == "High":
+        detector["confidence"] = "Medium"
+
     detector["ai_detection_percentage"] = ai_signal
     detector["verdict"] = _signal_level_from_percentage(ai_signal)
     detector["signal_level"] = detector["verdict"]
     detector["statistical_fingerprint_percentage"] = statistical_fingerprint
     detector["statistical_components"] = statistical_components
+    detector["reference_lm"] = reference_lm
+    detector["calibration"] = calibration
+    detector["calibration_prediction"] = meta_prediction
+    detector["calibration_features"] = features
+    detector["section_profile"] = section_profile
+    detector["score_source"] = score_source
+    detector["decision_status"] = decision_status
+    detector["decision_reason"] = decision_reason
+    detector["fallback_ensemble_percentage"] = fallback_signal
     detector["corroboration_bonus"] = corroboration_bonus
     detector["corroborating_layers"] = corroborating_layers
     detector["composite_weights"] = {
         "forensic": 0.25, "statistical": 0.35, "segments": 0.30, "document_consistency": 0.10
     }
     detector["calibration_notes"] = [
-        "AI Signal is a composite style index, not a percentage of words written by AI.",
-        "v2.1 headline weights: 25% forensic A-I evidence, 35% continuous statistical fingerprint, 30% paragraph profile and 10% document regularity.",
-        "When three or more independent layers are simultaneously elevated, an 8-point corroboration bonus is applied; two elevated layers add 4 points.",
-        "Perplexity and token-probability fields are local statistical proxies in this lightweight deployment, not token log-probabilities from a reference language model.",
+        "AI Signal is a style-screening probability/index, not the percentage of words written by AI.",
+        "v2.3 keeps four independent evidence layers and can replace the hand-weighted headline with a held-out-selected labelled meta-classifier.",
+        "If no trained calibration model is installed, the app explicitly reports that it is using the transparent four-layer ensemble.",
+        "Scores from 40% to 60%, or cases with very large layer disagreement, are marked Indeterminate rather than forced into a human/AI conclusion. Section profiles are also exposed to the learned calibrator.",
+        "True reference-LM perplexity and token surprisal are optional. When disabled, local statistical proxies remain active and are labelled as proxies.",
         "Human-context evidence changes confidence only and does not erase AI-style evidence.",
         "Tables, form rows, headings and table punctuation are excluded from prose-style scoring where possible.",
-        "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a style-screening indicator, not proof of authorship.",
+        "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a diagnostic aid, not proof of authorship.",
     ]
     human_like_style = 100 - ai_signal
     high_count = sum(1 for item in segments if item["band"] == "high")
@@ -813,10 +974,16 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "ai_score": detector["overall_score"],
         "ai_score_max": detector["max_score"],
         "ai_signal_breakdown": detector["signals"],
+        "decision_status": decision_status,
+        "decision_reason": decision_reason,
+        "score_source": score_source,
+        "calibration": calibration,
+        "calibration_features": features,
+        "section_profile": section_profile,
+        "reference_lm": reference_lm,
         # Internal/backward-compatible rewrite-quality field. The dashboard does not
         # use this as the complement of AI Signal.
         "naturalness_percentage": naturalness,
-        # Backward-compatible fields for older clients. They are no longer the main dashboard.
         "style_concern_percentage": style_concern,
         "style_concern_categories": category_concerns,
         "statistical_fingerprint_percentage": statistical_fingerprint,
@@ -838,9 +1005,9 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "metrics": global_report,
         "disclaimer": (
             "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
-            "AI Signal is not the percentage of words written by AI and does not prove authorship. Different detectors may disagree substantially on the same scholarly text. "
-            "The score combines forensic linguistic evidence, a continuous statistical fingerprint, paragraph-level distribution and document-level regularity. "
-            "Interpret it together with the nine signal categories, paragraph profile, evidence items and sentence map."
+            "AI Signal does not prove authorship. Different detectors may disagree substantially on the same text. "
+            "v2.3 reports whether the score came from a held-out-selected calibration model or the transparent four-layer fallback, "
+            "and it abstains when evidence is ambiguous or internally inconsistent."
         ),
         "detector_variability_notice": detector.get("detector_variability_notice", ""),
     }
