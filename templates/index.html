@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.1.0">
+  <link rel="stylesheet" href="/static/style.css?v=2.3.0">
 </head>
 <body>
   <header class="topbar">
@@ -54,7 +54,7 @@
     </section>
 
     <aside class="dashboard card">
-      <div class="section-head compact"><div><h2>AI Detector</h2><p>Four-layer screening: forensic A–I signals, statistical fingerprint, paragraph profile and document regularity</p></div></div>
+      <div class="section-head compact"><div><h2>AI Detector</h2><p>Section-aware screening: forensic A–I signals, statistical fingerprint, paragraph profile, document regularity, optional reference-LM features and held-out benchmark calibration</p></div></div>
       <div class="score-board">
         <section class="score-strip detector-score">
           <div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div>
@@ -73,6 +73,8 @@
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
         <div><small>Weighted A–I score</small><strong id="forensicScore">—</strong></div>
         <div><small>Human-context evidence</small><strong id="humannessCounter">—</strong></div>
+        <div><small>Decision status</small><strong id="decisionStatus">—</strong></div>
+        <div><small>Score source</small><strong id="scoreSource">—</strong></div>
       </div>
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
@@ -83,6 +85,8 @@
         <div><span id="flaggedSegments">0</span><small>Flagged prose segments</small></div>
         <div><span id="statisticalFingerprint">0%</span><small>Statistical fingerprint</small></div>
         <div><span id="engineSignalTarget">—</span><small>Engine 3 target</small></div>
+        <div><span id="calibrationState">Fallback</span><small>Calibration</small></div>
+        <div><span id="referenceLmState">Proxy</span><small>Reference LM</small></div>
       </div>
       <div class="legend">
         <span><i class="dot natural"></i>Minimal signal</span><span><i class="dot low"></i>Low signal</span>
@@ -98,7 +102,12 @@
         <button class="tab" data-tab="highlight">AI sentence map</button>
         <button class="tab" data-tab="signalcolours">Signal-coloured text</button>
         <button class="tab" data-tab="statistical">Statistical fingerprint</button>
+        <button class="tab" data-tab="calibration">Calibration & probability</button>
+        <button class="tab" data-tab="sections">Section profile</button>
         <button class="tab" data-tab="revised">Humanized text</button>
+        <button class="tab" data-tab="rewriteaudit">Rewrite audit</button>
+        <button id="validationTab" class="tab developer-only" data-tab="validation" hidden>Validation Centre</button>
+        <button id="benchmarkTab" class="tab developer-only" data-tab="benchmark" hidden>Benchmark Lab</button>
         <button class="tab" data-tab="findings">Sentence evidence</button>
         <button class="tab" data-tab="metrics">Style diagnostics</button>
       </div>
@@ -117,8 +126,11 @@
         <div id="signalColourTip" class="segment-tip">Select a marked sentence to see its signal letters and evidence.</div>
       </div>
       <div id="statisticalPanel" class="panel"><div id="statisticalSignals" class="concern-categories empty-state">Run AI detection to inspect the continuous statistical fingerprint.</div></div>
+      <div id="calibrationPanel" class="panel"><div id="calibrationDetails" class="calibration-details empty-state">Run AI detection to inspect calibration status, abstention and probability features.</div></div>
+      <div id="sectionsPanel" class="panel"><div id="sectionProfile" class="section-profile empty-state">Run AI detection to inspect signal behaviour by scholarly section.</div></div>
       <div id="revisedPanel" class="panel">
         <textarea id="revisedText" placeholder="The protected humanized version will appear here."></textarea>
+        <div id="preservationCertificate" class="preservation-certificate empty-state">A protected-content certificate will appear after humanization.</div>
         <div class="export-row">
           <button id="copyBtn" class="secondary">Copy text</button>
           <button id="docxBtn" class="secondary">Export clean DOCX</button>
@@ -126,10 +138,38 @@
           <button id="htmlBtn" class="secondary">Export signal-coloured HTML</button>
         </div>
       </div>
+      <div id="rewriteauditPanel" class="panel"><div id="rewriteAudit" class="rewrite-audit empty-state">Run a humanizer to see the before/after signal map. Engine 3 shows which diagnosed signals it deliberately targeted.</div></div>
+      <div id="validationPanel" class="panel"><div id="validationCentre" class="validation-centre empty-state">Enable Benchmark Lab to view calibration and validation metrics.</div></div>
+      <div id="benchmarkPanel" class="panel">
+        <div class="benchmark-lab">
+          <header><div><h3>Developer Benchmark Lab</h3><p>Add provenance-known samples. Training is allowed only after the corpus has enough human and AI examples.</p></div><span id="benchmarkCount" class="status-pill">0 samples</span></header>
+          <div class="benchmark-controls">
+            <label>Developer token<input id="developerToken" type="password" autocomplete="off" placeholder="X-Developer-Token"></label>
+            <label>Provenance<select id="benchmarkProvenance">
+              <option value="human_original">Human original</option><option value="human_edited">Human edited</option>
+              <option value="gpt_generated">GPT generated</option><option value="claude_generated">Claude generated</option>
+              <option value="gemini_generated">Gemini generated</option><option value="other_ai_generated">Other AI generated</option>
+              <option value="ai_human_edited">AI → human edited</option><option value="human_ai_edited">Human → AI edited</option>
+              <option value="engine1_output">AI → Engine 1</option><option value="engine2_output">AI → Engine 2</option>
+              <option value="engine3_output">AI → Engine 3</option><option value="other_humanizer_output">Other humanizer output</option>
+            </select></label>
+            <label>Source/model family<input id="benchmarkSourceFamily" placeholder="human, GPT-5.6, Claude, Gemini…"></label>
+            <label>Discipline<input id="benchmarkDiscipline" placeholder="Business, Education, Medicine…"></label>
+            <label>Document type<select id="benchmarkDocumentType"><option>unknown</option><option>abstract</option><option>coursework</option><option>thesis</option><option>journal article</option><option>report</option><option>email</option></select></label>
+            <label>Editing level<select id="benchmarkEditingLevel"><option value="none">None</option><option value="light">Light</option><option value="moderate">Moderate</option><option value="heavy">Heavy</option></select></label>
+            <label>Copyleaks %<input id="benchmarkCopyleaks" type="number" min="0" max="100" step="0.1"></label>
+            <label>Turnitin %<input id="benchmarkTurnitin" type="number" min="0" max="100" step="0.1"></label>
+            <label>QuillBot/Scribbr %<input id="benchmarkQuillbot" type="number" min="0" max="100" step="0.1"></label>
+          </div>
+          <p class="benchmark-note">The current Source text is added to the benchmark. External detector scores are optional metadata and are never treated as ground truth.</p>
+          <div class="export-row"><button id="addBenchmarkBtn" class="secondary">Add current text</button><button id="refreshBenchmarkBtn" class="secondary">Refresh status</button><button id="trainBenchmarkBtn" class="primary">Train/select model</button><button id="evaluateBenchmarkBtn" class="secondary">Evaluate active model</button><button id="adversarialAuditBtn" class="secondary">Robustness audit</button></div>
+          <div id="benchmarkStatus" class="benchmark-status empty-state">Benchmark Lab status will appear here.</div>
+        </div>
+      </div>
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No sentence evidence yet.</div></div>
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=2.1.0"></script>
+  <script src="/static/app.js?v=2.3.0"></script>
 </body>
 </html>
