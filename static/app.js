@@ -8,12 +8,120 @@ function setMessage(text, kind = '') {
   el.className = `message ${kind}`;
 }
 
+const requestControlIds = [
+  'analyseBtn','humanizeBtn','fileInput','docxBtn','annotatedDocxBtn','htmlBtn',
+  'addBenchmarkBtn','refreshBenchmarkBtn','trainBenchmarkBtn','evaluateBenchmarkBtn',
+  'adversarialAuditBtn','driftBtn','rollbackModelBtn','developerAccessBtn'
+];
+
 function busy(state, text = 'Working…') {
-  ['analyseBtn','humanizeBtn','fileInput'].forEach(id => {
+  requestControlIds.forEach(id => {
     const el = $(id);
     if (el) el.disabled = state;
   });
+  document.querySelectorAll('.promote-model').forEach(el => { el.disabled = state; });
   if (state) setMessage(text);
+}
+
+const activityPlans = {
+  upload: [
+    [8, 'Preparing document…'], [28, 'Sending document…'], [55, 'Reading file…'],
+    [76, 'Extracting text…'], [90, 'Preparing Source text…']
+  ],
+  detect: [
+    [8, 'Preparing text…'], [24, 'Screening linguistic signals…'], [46, 'Computing statistical patterns…'],
+    [66, 'Scoring prose segments…'], [82, 'Building signal map…'], [92, 'Finalising detector report…']
+  ],
+  humanize: [
+    [8, 'Protecting evidence-bearing content…'], [27, 'Analysing editable prose…'], [48, 'Rewriting scholarly prose…'],
+    [70, 'Checking content preservation…'], [85, 'Running independent post-rewrite audit…'], [92, 'Preparing revised text…']
+  ],
+  export: [
+    [12, 'Preparing export…'], [45, 'Generating document…'], [78, 'Packaging file…'], [92, 'Preparing download…']
+  ],
+  benchmark: [
+    [10, 'Preparing benchmark request…'], [38, 'Processing benchmark data…'], [70, 'Updating private validation data…'], [92, 'Finalising…']
+  ],
+  train: [
+    [6, 'Loading benchmark corpus…'], [24, 'Extracting detector features…'], [48, 'Comparing candidate models…'],
+    [68, 'Validating held-out performance…'], [84, 'Applying false-positive constraint…'], [93, 'Saving selected model…']
+  ],
+  evaluate: [
+    [10, 'Loading active model…'], [35, 'Scoring held-out samples…'], [66, 'Calculating validation metrics…'], [92, 'Preparing Validation Centre…']
+  ],
+  audit: [
+    [8, 'Preparing robustness test…'], [28, 'Testing original text…'], [50, 'Testing Engine 1 output…'],
+    [72, 'Testing Engine 3 output…'], [92, 'Comparing detector stability…']
+  ],
+  developer: [
+    [12, 'Checking developer credentials…'], [40, 'Loading private detector status…'], [70, 'Loading benchmark registry…'], [92, 'Preparing developer tools…']
+  ]
+};
+
+let activityTimer = null;
+let activityHideTimer = null;
+let activityProgressValue = 0;
+let activityPlan = activityPlans.benchmark;
+
+function activityStageFor(progress) {
+  let stage = activityPlan[0]?.[1] || 'Processing request…';
+  for (const [threshold, label] of activityPlan) {
+    if (progress >= threshold) stage = label;
+    else break;
+  }
+  return stage;
+}
+
+function setActivityProgress(progress, stage = null) {
+  const wrap = $('activityProgress');
+  const ring = $('activityRing');
+  const percent = $('activityPercent');
+  const stageEl = $('activityStage');
+  activityProgressValue = Math.max(0, Math.min(100, Math.round(progress)));
+  if (ring) ring.style.setProperty('--activity-angle', `${activityProgressValue * 3.6}deg`);
+  if (percent) percent.textContent = `${activityProgressValue}%`;
+  if (stageEl) stageEl.textContent = stage || activityStageFor(activityProgressValue);
+  if (wrap) wrap.hidden = false;
+}
+
+function startActivity(kind, title, initialStage = '') {
+  clearInterval(activityTimer);
+  clearTimeout(activityHideTimer);
+  activityPlan = activityPlans[kind] || activityPlans.benchmark;
+  activityProgressValue = 4;
+  const wrap = $('activityProgress');
+  if (wrap) {
+    wrap.hidden = false;
+    wrap.className = 'activity-progress active';
+  }
+  if ($('activityTitle')) $('activityTitle').textContent = title || 'Working';
+  setActivityProgress(activityProgressValue, initialStage || activityStageFor(activityProgressValue));
+  activityTimer = window.setInterval(() => {
+    if (activityProgressValue >= 93) return;
+    const step = activityProgressValue < 30 ? 4 : activityProgressValue < 65 ? 2 : 1;
+    setActivityProgress(Math.min(93, activityProgressValue + step));
+  }, 650);
+}
+
+function completeActivity(stage = 'Completed') {
+  clearInterval(activityTimer);
+  const wrap = $('activityProgress');
+  if (wrap) wrap.className = 'activity-progress success';
+  setActivityProgress(100, stage);
+  activityHideTimer = window.setTimeout(() => {
+    if (wrap) wrap.hidden = true;
+  }, 1400);
+}
+
+function failActivity(stage = 'Request failed') {
+  clearInterval(activityTimer);
+  const wrap = $('activityProgress');
+  if (wrap) wrap.className = 'activity-progress error';
+  if ($('activityStage')) $('activityStage').textContent = stage;
+  if (wrap) wrap.hidden = false;
+  activityHideTimer = window.setTimeout(() => {
+    if (wrap) wrap.hidden = true;
+  }, 2600);
 }
 
 async function api(url, options = {}) {
@@ -50,7 +158,6 @@ function updateDashboard(report, comparison = null) {
   if ($('forensicScore')) $('forensicScore').textContent = `${Number(detector.overall_score ?? report.ai_score ?? 0).toFixed(1)} / ${Number(detector.max_score ?? report.ai_score_max ?? 27)}`;
   if ($('humannessCounter')) $('humannessCounter').textContent = `${Number(detector.humanness_counter_score ?? 0)} point${Number(detector.humanness_counter_score ?? 0) === 1 ? '' : 's'} · confidence only`;
   if ($('decisionStatus')) $('decisionStatus').textContent = report.decision_status || detector.decision_status || '—';
-  if ($('scoreSource')) $('scoreSource').textContent = (report.score_source || detector.score_source || '—').replaceAll('_',' ');
   if ($('wordCount')) $('wordCount').textContent = report.metrics?.word_count ?? 0;
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
   if ($('activeSignals')) $('activeSignals').textContent = `${report.active_signal_categories ?? 0}/9`;
@@ -59,8 +166,6 @@ function updateDashboard(report, comparison = null) {
   if ($('flaggedSegments')) $('flaggedSegments').textContent = report.flagged_prose_segments ?? detector.flagged_segment_count ?? 0;
   if ($('statisticalFingerprint')) $('statisticalFingerprint').textContent = `${Number(report.statistical_fingerprint_percentage ?? detector.statistical_fingerprint_percentage ?? 0)}%`;
   if ($('engineSignalTarget')) { const active=(detector.signals||[]).filter(x=>Number(x.score||0)>0).map(x=>x.key); $('engineSignalTarget').textContent=active.length ? active.join(', ') : 'None'; }
-  if ($('calibrationState')) $('calibrationState').textContent = report.calibration?.trained ? `Trained · ${Number(report.calibration.sample_count||0)} samples` : 'Fallback';
-  if ($('referenceLmState')) $('referenceLmState').textContent = report.reference_lm?.scored ? 'True LM' : (report.reference_lm?.enabled ? 'Unavailable' : 'Proxy');
   if ($('aiScoreBar')) $('aiScoreBar').style.width = `${Math.max(0, Math.min(100, ai))}%`;
   if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${Math.max(0, Math.min(100, humanLike))}%`;
   if (comparison?.ai && $('aiGain')) {
@@ -88,7 +193,6 @@ function updateDashboard(report, comparison = null) {
   bindSignalColours();
   renderDetector(detector);
   renderStatistical(report.style_concern_categories || [], detector);
-  renderCalibration(report);
   renderSectionProfile(report.section_profile || detector.section_profile || {});
   renderFindings(report.segments || []);
   renderMetrics(report.metrics || {});
@@ -143,17 +247,11 @@ function renderDetector(detector) {
       <div><small>Confidence</small><strong>${escapeHtml(detector.confidence || '—')}</strong></div>
     </section>`;
 
-  const weights = detector.composite_weights || {};
-  const calibrated = detector.score_source === 'calibrated_meta_classifier';
-  const arithmetic = `<section class="score-arithmetic">
-    <b>${calibrated ? 'Calibrated meta-classifier' : 'Transparent four-layer fallback'}</b>
-    <span>Forensic A–I ${Number(detector.category_signal_percentage ?? 0)}% × ${Math.round(Number(weights.forensic ?? 0.25) * 100)}%</span>
-    <span>Statistical fingerprint ${Number(detector.statistical_fingerprint_percentage ?? 0)}% × ${Math.round(Number(weights.statistical ?? 0.35) * 100)}%</span>
-    <span>Paragraph profile ${Number(detector.segment_signal_percentage ?? 0)}% × ${Math.round(Number(weights.segments ?? 0.30) * 100)}%</span>
-    <span>Document regularity ${Number(detector.consistency_signal_percentage ?? 0)}% × ${Math.round(Number(weights.document_consistency ?? 0.10) * 100)}%</span>
-    ${calibrated ? `<span>Transparent fallback: ${Number(detector.fallback_ensemble_percentage ?? 0)}%</span><span>Learned probability: ${Number(detector.ai_detection_percentage ?? 0)}%</span>` : `<span>Corroboration bonus +${Number(detector.corroboration_bonus ?? 0)}</span><span>Composite = ${Number(detector.ai_detection_percentage ?? 0)}%</span>`}
-    <span>Decision: ${escapeHtml(detector.decision_status || '—')} · ${escapeHtml(detector.decision_reason || '')}</span>
-    <span>Human-context evidence ${Number(detector.humanness_counter_score ?? 0)} point(s), confidence only</span>
+  const arithmetic = `<section class="score-arithmetic public-method-note">
+    <b>How to read the result</b>
+    <span>The headline score combines multiple independent writing-pattern checks.</span>
+    <span>Use the sentence map and A–I evidence to inspect the areas that contributed to the result.</span>
+    <span>${escapeHtml(detector.decision_status || 'Result available')}: ${escapeHtml(detector.decision_reason || 'Review the highlighted evidence rather than treating the score as proof of authorship.')}</span>
   </section>`;
 
   const cards = signals.map(signal => {
@@ -177,7 +275,7 @@ function renderDetector(detector) {
     ${hotspots.length ? `<div class="segment-hotspots">${hotspots.map(item=>`<article><b>Segment ${Number(item.segment||0)} · ${Number(item.ai_signal||0)}%</b><span>${escapeHtml(item.excerpt||'')}</span></article>`).join('')}</div>` : '<p class="no-signal">No paragraph-level hotspot crossed the local display threshold.</p>'}
   </section>`;
   const notes = (detector.calibration_notes || []).map(note => `<li>${escapeHtml(note)}</li>`).join('');
-  const narrative = `<section class="detector-explanation"><h3>What gave it away</h3><p>${escapeHtml(detector.what_gave_it_away || '')}</p><h3>Calibration</h3><ul>${notes}</ul></section>`;
+  const narrative = `<section class="detector-explanation"><h3>What gave it away</h3><p>${escapeHtml(detector.what_gave_it_away || '')}</p><h3>Interpretation notes</h3><ul>${notes}</ul></section>`;
 
   target.className = 'detector-signals';
   target.innerHTML = header + arithmetic + segmentSummary + `<div class="signal-grid">${cards}</div>` + narrative;
@@ -192,11 +290,6 @@ function renderStatistical(groups, detector = {}) {
     return;
   }
   target.className = 'concern-categories';
-  const ref = detector.reference_lm || {};
-  const refBlock = `<section class="concern-group reference-lm-card">
-    <header><div><h3>Reference-language-model probability diagnostics</h3><p>${escapeHtml(ref.message || 'Optional true token-probability layer is not configured.')}</p></div><strong>${ref.scored ? 'Active' : 'Optional'}</strong></header>
-    ${ref.scored ? `<div class="reference-metrics"><span><b>${Number(ref.perplexity||0).toFixed(2)}</b>Perplexity</span><span><b>${Number(ref.surprisal_mean||0).toFixed(2)}</b>Mean surprisal</span><span><b>${Number(ref.surprisal_std||0).toFixed(2)}</b>Surprisal SD</span><span><b>${Math.round(Number(ref.low_surprisal_share||0)*100)}%</b>Low-surprisal tokens</span><span><b>${Number(ref.longest_low_surprisal_run||0)}</b>Longest predictable run</span></div>` : `<p class="no-signal">Install requirements-reference-lm.txt and enable REFERENCE_LM_ENABLED=true to calculate true token probabilities. Proxy metrics above remain active otherwise.</p>`}
-  </section>`;
   target.innerHTML = groups.map(group => `
     <section class="concern-group">
       <header><div><h3>${escapeHtml(group.group || '')}</h3><p>${escapeHtml(group.description || '')}</p></div><strong>${Number(group.percentage || 0)}%</strong></header>
@@ -205,7 +298,7 @@ function renderStatistical(groups, detector = {}) {
         <div class="bar"><i style="width:${Math.max(0,Math.min(100,Number(metric.percentage||0)))}%"></i></div>
         <ul>${(metric.evidence || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>
       </article>`).join('')}
-    </section>`).join('') + refBlock;
+    </section>`).join('');
 }
 
 function renderCalibration(report = {}) {
@@ -214,11 +307,14 @@ function renderCalibration(report = {}) {
   const calibration = report.calibration || report.ai_detector?.calibration || {};
   const prediction = report.ai_detector?.calibration_prediction || null;
   const features = report.calibration_features || report.ai_detector?.calibration_features || {};
+  const ref = report.reference_lm || report.ai_detector?.reference_lm || {};
   target.className = 'calibration-details';
-  const metrics = calibration.metrics || {};
-  const metricCards = calibration.trained ? `<div class="reference-metrics"><span><b>${Number(calibration.sample_count||0)}</b>Training samples</span><span><b>${metrics.false_positive_rate !== undefined ? Math.round(Number(metrics.false_positive_rate)*100)+'%' : '—'}</b>Validation FPR</span><span><b>${metrics.false_negative_rate !== undefined ? Math.round(Number(metrics.false_negative_rate)*100)+'%' : '—'}</b>Validation FNR</span><span><b>${metrics.f1 !== undefined ? Number(metrics.f1).toFixed(2) : '—'}</b>Validation F1</span><span><b>${metrics.roc_auc !== undefined ? Number(metrics.roc_auc).toFixed(2) : '—'}</b>Validation ROC-AUC</span></div>` : '';
+  const metrics = calibration.metrics || calibration.test_metrics || {};
+  const metricCards = calibration.trained ? `<div class="reference-metrics"><span><b>${Number(calibration.sample_count||0)}</b>Training samples</span><span><b>${metrics.false_positive_rate !== undefined ? Math.round(Number(metrics.false_positive_rate)*100)+'%' : '—'}</b>Test FPR</span><span><b>${metrics.false_negative_rate !== undefined ? Math.round(Number(metrics.false_negative_rate)*100)+'%' : '—'}</b>Test FNR</span><span><b>${metrics.f1 !== undefined ? Number(metrics.f1).toFixed(2) : '—'}</b>Test F1</span><span><b>${metrics.roc_auc !== undefined ? Number(metrics.roc_auc).toFixed(2) : '—'}</b>Test ROC-AUC</span></div>` : '';
   const featureRows = Object.entries(features).map(([key,value])=>`<div><span>${escapeHtml(labelize(key))}</span><b>${Number(value).toFixed(2)}</b></div>`).join('');
-  target.innerHTML = `<section class="calibration-card ${calibration.trained ? 'trained' : 'fallback'}"><header><div><h3>${calibration.trained ? `Labelled meta-classifier active · ${escapeHtml(calibration.model_type || 'learned model')}` : 'Transparent fallback active'}</h3><p>${escapeHtml(calibration.message || '')}</p></div><strong>${escapeHtml(report.decision_status || report.ai_detector?.decision_status || '—')}</strong></header>${metricCards}<p>${escapeHtml(report.decision_reason || report.ai_detector?.decision_reason || '')}</p>${prediction ? `<p><b>Learned probability:</b> ${Number(prediction.percentage||0)}% · fallback ensemble ${Number(report.ai_detector?.fallback_ensemble_percentage||0)}%</p>` : '<p>No corpus-trained model is installed, so the app does not pretend the score is empirically calibrated.</p>'}<details><summary>Feature vector used by the calibrator</summary><div class="calibration-feature-grid">${featureRows}</div></details></section>`;
+  const contributions = Object.entries(prediction?.contributions || {}).sort((a,b)=>Math.abs(Number(b[1]))-Math.abs(Number(a[1]))).slice(0,12).map(([key,value])=>`<div><span>${escapeHtml(labelize(key))}</span><b>${Number(value).toFixed(3)}</b></div>`).join('');
+  const probabilityBlock = `<section class="calibration-card"><header><div><h3>Private probability diagnostics</h3><p>${escapeHtml(ref.message || 'Reference-language-model diagnostics are disabled or unavailable.')}</p></div><strong>${ref.scored ? 'Reference LM active' : 'Reference LM inactive'}</strong></header>${ref.scored ? `<div class="reference-metrics"><span><b>${Number(ref.perplexity||0).toFixed(2)}</b>Perplexity</span><span><b>${Number(ref.surprisal_mean||0).toFixed(2)}</b>Mean surprisal</span><span><b>${Number(ref.surprisal_std||0).toFixed(2)}</b>Surprisal SD</span><span><b>${Math.round(Number(ref.low_surprisal_share||0)*100)}%</b>Low-surprisal tokens</span><span><b>${Number(ref.curvature_regular_share||0).toFixed(3)}</b>Curvature regularity</span></div>` : ''}</section>`;
+  target.innerHTML = `<section class="calibration-card ${calibration.trained ? 'trained' : 'fallback'}"><header><div><h3>${calibration.trained ? `Active learned detector · ${escapeHtml(calibration.model_type || 'model')}` : 'Fallback detector active'}</h3><p>${escapeHtml(calibration.message || '')}</p></div><strong>Private developer view</strong></header>${metricCards}${prediction ? `<p><b>Learned probability:</b> ${Number(prediction.percentage||0)}% · fallback ensemble ${Number(report.ai_detector?.fallback_ensemble_percentage||0)}%</p>` : '<p>No trained benchmark model is installed.</p>'}${contributions ? `<details><summary>Largest feature contributions for this text</summary><div class="calibration-feature-grid">${contributions}</div></details>`:''}<details><summary>Feature vector used by the calibrator</summary><div class="calibration-feature-grid">${featureRows}</div></details></section>${probabilityBlock}`;
 }
 
 function renderSectionProfile(profile = {}) {
@@ -231,7 +327,7 @@ function renderSectionProfile(profile = {}) {
     return `<article class="section-profile-card"><header><div><h3>${escapeHtml(label)}</h3><p>${Number(item.segment_count||0)} sentence segments · ${Number(item.flagged_count||0)} flagged · ${Number(item.elevated_count||0)} elevated</p></div><strong>${mean.toFixed(1)}%</strong></header><div class="bar"><i style="width:${Math.max(0,Math.min(100,mean))}%"></i></div></article>`;
   }).join('');
   target.className = 'section-profile';
-  target.innerHTML = `<section class="section-profile-summary"><header><div><h3>Section-aware academic profile</h3><p>The calibrator receives section-level signal means so Methods and Results are not assumed to behave like Discussion or reflective prose.</p></div><strong>Spread ${Number(profile.score_spread||0).toFixed(1)}</strong></header></section><div class="section-profile-grid">${rows}</div>`;
+  target.innerHTML = `<section class="section-profile-summary"><header><div><h3>Section-aware academic profile</h3><p>Section-aware screening allows Methods and Results to be interpreted differently from Discussion or reflective prose.</p></div><strong>Spread ${Number(profile.score_spread||0).toFixed(1)}</strong></header></section><div class="section-profile-grid">${rows}</div>`;
 }
 
 function renderRewriteAudit(data = null) {
@@ -294,16 +390,83 @@ function renderBenchmarkStatus(payload = {}) {
   target.innerHTML = `<div class="reference-metrics"><span><b>${Number(benchmark.human_count||0)}</b>Human</span><span><b>${Number(benchmark.ai_count||0)}</b>AI/AI-edited</span><span><b>${benchmark.ready_to_train?'Ready':'Not ready'}</b>Training</span><span><b>${ext.mean_score_range == null ? '—' : Number(ext.mean_score_range).toFixed(1)}</b>Mean external detector range</span></div>${benchmark.warning ? `<p class="warning-note">${escapeHtml(benchmark.warning)}</p>`:''}`;
 }
 
-async function refreshBenchmark() {
+function renderRegistry(registry = {}, drift = null) {
+  const target=$('modelRegistryStatus');
+  if(!target) return;
+  const models=registry.models || [];
+  const active=registry.active || null;
+  const cards=models.slice(0,8).map(item=>`<article class="registry-model ${item.id===active?'active':''}"><div><b>${escapeHtml(item.model_type||'model')}</b><span>${escapeHtml(item.id||'')}</span></div><small>${Number(item.sample_count||0)} samples · threshold ${Number(item.decision_threshold||0.5).toFixed(3)} · FPR ${metricPercent(item.test_metrics?.false_positive_rate)}</small>${item.id===active?'<em>Active</em>':`<button class="secondary promote-model" data-model-id="${escapeHtml(item.id||'')}">Promote</button>`}</article>`).join('');
+  const driftBlock=drift?.available ? `<div class="drift-box"><b>Drift: ${escapeHtml(drift.status||'unknown')}</b><span>Index ${Number(drift.drift_index||0).toFixed(2)} from ${Number(drift.recent_samples||0)} recent samples.</span></div>` : `<div class="drift-box"><b>Drift</b><span>${escapeHtml(drift?.message || 'Run a drift check after training and adding recent benchmark samples.')}</span></div>`;
+  target.className='benchmark-status';
+  target.innerHTML=`<h3>Model registry</h3>${cards || '<p>No trained models are registered yet.</p>'}${driftBlock}`;
+  target.querySelectorAll('.promote-model').forEach(btn=>btn.addEventListener('click',()=>promoteModel(btn.dataset.modelId)));
+}
+
+async function refreshRegistryAndDrift(showProgress = false) {
+  if (showProgress) { busy(true, 'Checking model registry and drift…'); startActivity('benchmark', 'Check detector drift', 'Loading model registry…'); }
+  try {
+    const [registryResponse,driftResponse]=await Promise.all([
+      api('/api/developer/benchmark/registry',{headers:developerHeaders()}),
+      api('/api/developer/benchmark/drift',{headers:developerHeaders()})
+    ]);
+    const registryData=await registryResponse.json();
+    const driftData=await driftResponse.json();
+    renderRegistry(registryData.registry||{},driftData.drift||{});
+    if (showProgress) completeActivity('Registry and drift check completed');
+    return {registry:registryData.registry||{},drift:driftData.drift||{}};
+  } catch(e) {
+    if($('modelRegistryStatus')) {$('modelRegistryStatus').className='benchmark-status empty-state';$('modelRegistryStatus').textContent=e.message;}
+    if (showProgress) failActivity('Registry or drift check failed');
+    return null;
+  } finally {
+    if (showProgress) busy(false);
+  }
+}
+
+async function promoteModel(modelId) {
+  if(!modelId) return;
+  busy(true, 'Promoting detector model…');
+  startActivity('benchmark', 'Promote detector model', 'Applying selected model…');
+  try {
+    const response=await api('/api/developer/benchmark/promote',{method:'POST',headers:{'Content-Type':'application/json',...developerHeaders()},body:JSON.stringify({model_id:modelId})});
+    const data=await response.json();
+    renderRegistry(data.registry||{},null);
+    setMessage('Selected detector model promoted.','success');
+    completeActivity('Detector model promoted');
+  } catch(e) { setMessage(e.message,'error'); failActivity('Model promotion failed'); }
+  finally { busy(false); }
+}
+
+async function rollbackModel() {
+  busy(true, 'Rolling back detector model…');
+  startActivity('benchmark', 'Rollback detector model', 'Restoring previous model…');
+  try {
+    const response=await api('/api/developer/benchmark/rollback',{method:'POST',headers:developerHeaders()});
+    const data=await response.json();
+    renderRegistry(data.registry||{},null);
+    setMessage('Detector model rolled back to the previous registered version.','success');
+    completeActivity('Previous detector model restored');
+  } catch(e) { setMessage(e.message,'error'); failActivity('Model rollback failed'); }
+  finally { busy(false); }
+}
+
+
+async function refreshBenchmark(showProgress = false) {
+  if (showProgress) { busy(true, 'Refreshing Benchmark Lab…'); startActivity('benchmark', 'Refresh Benchmark Lab', 'Loading benchmark status…'); }
   try {
     const response = await api('/api/developer/benchmark/status',{headers:developerHeaders()});
     const data = await response.json();
     renderBenchmarkStatus(data);
     renderValidationCentre(data.validation || {});
+    renderRegistry(data.registry || {}, null);
+    if (showProgress) completeActivity('Benchmark status refreshed');
     return data;
   } catch (e) {
     if ($('benchmarkStatus')) { $('benchmarkStatus').className='benchmark-status empty-state'; $('benchmarkStatus').textContent=e.message; }
+    if (showProgress) failActivity('Benchmark refresh failed');
     return null;
+  } finally {
+    if (showProgress) busy(false);
   }
 }
 
@@ -313,26 +476,33 @@ async function addBenchmarkSample() {
   const external = {};
   [['copyleaks','benchmarkCopyleaks'],['turnitin','benchmarkTurnitin'],['quillbot_scribbr','benchmarkQuillbot']].forEach(([key,id])=>{ const value=$(id)?.value; if(value!=='' && value!=null) external[key]=Number(value); });
   const body = {text, provenance:$('benchmarkProvenance')?.value || 'human_original', source_family:$('benchmarkSourceFamily')?.value || 'unknown', discipline:$('benchmarkDiscipline')?.value || 'unknown', document_type:$('benchmarkDocumentType')?.value || 'unknown', editing_level:$('benchmarkEditingLevel')?.value || 'none', external_scores:external};
+  busy(true, 'Adding benchmark sample…');
+  startActivity('benchmark', 'Add benchmark sample', 'Saving provenance-labelled text…');
   try {
     const response=await api('/api/developer/benchmark/sample',{method:'POST',headers:{'Content-Type':'application/json',...developerHeaders()},body:JSON.stringify(body)});
     const data=await response.json(); renderBenchmarkStatus(data); setMessage('Benchmark sample added with provenance metadata.','success');
-  } catch(e) { setMessage(e.message,'error'); }
+    completeActivity('Benchmark sample saved');
+  } catch(e) { setMessage(e.message,'error'); failActivity('Adding benchmark sample failed'); }
+  finally { busy(false); }
 }
 
 async function trainBenchmark() {
   busy(true,'Extracting benchmark features and selecting the best held-out model…');
-  try { const response=await api('/api/developer/benchmark/train',{method:'POST',headers:developerHeaders()}); const data=await response.json(); renderValidationCentre(data.validation||{}); await refreshBenchmark(); activateTab('validation'); setMessage(`Calibration trained. Selected ${data.selected_model || 'model'} from held-out comparison.`,'success'); } catch(e){setMessage(e.message,'error');} finally{busy(false);}
+  startActivity('train', 'Train/select detector model', 'Loading benchmark corpus…');
+  try { const response=await api('/api/developer/benchmark/train',{method:'POST',headers:developerHeaders()}); const data=await response.json(); renderValidationCentre(data.validation||{}); await refreshBenchmark(); await refreshRegistryAndDrift(); activateTab('validation'); setMessage(`Calibration trained. Selected ${data.selected_model || 'model'} from held-out comparison.`,'success'); completeActivity('Training and model selection completed'); } catch(e){setMessage(e.message,'error'); failActivity('Detector training failed');} finally{busy(false);}
 }
 
 async function evaluateBenchmark() {
   busy(true,'Evaluating active model…');
-  try { const response=await api('/api/developer/benchmark/evaluate',{method:'POST',headers:developerHeaders()}); const data=await response.json(); renderValidationCentre(data.validation||{}); activateTab('validation'); setMessage('Validation report updated.','success'); } catch(e){setMessage(e.message,'error');} finally{busy(false);}
+  startActivity('evaluate', 'Evaluate detector model', 'Loading active model…');
+  try { const response=await api('/api/developer/benchmark/evaluate',{method:'POST',headers:developerHeaders()}); const data=await response.json(); renderValidationCentre(data.validation||{}); activateTab('validation'); setMessage('Validation report updated.','success'); completeActivity('Detector evaluation completed'); } catch(e){setMessage(e.message,'error'); failActivity('Detector evaluation failed');} finally{busy(false);}
 }
 
 async function runAdversarialAudit() {
   const text=$('sourceText')?.value.trim(); if(!text) return setMessage('Add source text before running a robustness audit.','error');
   busy(true,'Testing detector stability after Engine 1 and Engine 3 editing…');
-  try { const response=await api('/api/developer/benchmark/adversarial-audit',{method:'POST',headers:{'Content-Type':'application/json',...developerHeaders()},body:JSON.stringify({text,mode:$('mode')?.value||'deep'})}); const data=await response.json(); if($('rewriteAudit')){$('rewriteAudit').className='rewrite-audit';$('rewriteAudit').innerHTML=`<section class="rewrite-audit-head"><div><h3>Detector robustness audit</h3><p>${escapeHtml(data.note||'')}</p></div><strong>${Number(data.before||0)}%</strong></section><div class="candidate-model-grid"><article><b>Engine 1</b><span>${Number(data.before||0)}% → ${Number(data.engine1?.after||0)}% · preservation ${data.engine1?.preservation?.passed?'pass':'review'}</span></article><article><b>Engine 3</b><span>${Number(data.before||0)}% → ${Number(data.engine3?.after||0)}% · preservation ${data.engine3?.preservation?.passed?'pass':'review'}</span></article></div>`;} activateTab('rewriteaudit'); setMessage('Robustness audit completed.','success'); } catch(e){setMessage(e.message,'error');} finally{busy(false);}
+  startActivity('audit', 'Run robustness audit', 'Preparing original and rewritten variants…');
+  try { const response=await api('/api/developer/benchmark/adversarial-audit',{method:'POST',headers:{'Content-Type':'application/json',...developerHeaders()},body:JSON.stringify({text,mode:$('mode')?.value||'deep'})}); const data=await response.json(); if($('rewriteAudit')){$('rewriteAudit').className='rewrite-audit';$('rewriteAudit').innerHTML=`<section class="rewrite-audit-head"><div><h3>Detector robustness audit</h3><p>${escapeHtml(data.note||'')}</p></div><strong>${Number(data.before||0)}%</strong></section><div class="candidate-model-grid"><article><b>Engine 1</b><span>${Number(data.before||0)}% → ${Number(data.engine1?.after||0)}% · preservation ${data.engine1?.preservation?.passed?'pass':'review'}</span></article><article><b>Engine 3</b><span>${Number(data.before||0)}% → ${Number(data.engine3?.after||0)}% · preservation ${data.engine3?.preservation?.passed?'pass':'review'}</span></article></div>`;} activateTab('rewriteaudit'); setMessage('Robustness audit completed.','success'); completeActivity('Robustness audit completed'); } catch(e){setMessage(e.message,'error'); failActivity('Robustness audit failed');} finally{busy(false);}
 }
 
 function renderPreservation(certificate = null) {
@@ -373,14 +543,17 @@ function renderMetrics(metrics) {
 async function analyse() {
   const text = $('sourceText')?.value.trim();
   if (!text) return setMessage('Add text before running AI detection.', 'error');
-  busy(true, 'Running calibrated multi-layer AI detection…');
+  busy(true, 'Running multi-layer AI detection…');
+  startActivity('detect', 'Detect AI', 'Preparing text for detection…');
   try {
     const response = await api('/api/analyse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
     updateDashboard(await response.json());
-    activateTab('detector');
-    setMessage('AI detection completed. Review the forensic, statistical, paragraph, calibration and signal-colour evidence together.', 'success');
+    activateTab('highlight');
+    setMessage('AI detection completed. Red areas contain detected AI-style signals; green areas contain no sentence-level signal. Grey areas are protected or excluded structure.', 'success');
+    completeActivity('AI detection completed');
   } catch(e) {
     setMessage(e.message,'error');
+    failActivity('AI detection failed');
   } finally {
     busy(false);
   }
@@ -390,8 +563,9 @@ async function humanize() {
   const text = $('sourceText')?.value.trim();
   if (!text) return setMessage('Add text before humanising.', 'error');
   busy(true, 'Applying protected scholarly refinement…');
+  startActivity('humanize', 'Humanize scholarly text', 'Preparing protected rewrite…');
   try {
-    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'gpt-5.6-terra'})});
+    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2'})});
     const data = await response.json();
     if ($('revisedText')) $('revisedText').value=data.text;
     const aiImprovement = data.ai_signal_improvement || {};
@@ -417,8 +591,10 @@ async function humanize() {
     const aiNote = ` Independent post-rewrite AI audit: ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
     setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
+    completeActivity(data.changed ? 'Humanization completed' : 'Completed with no safe changes');
   } catch(e) {
     setMessage(e.message,'error');
+    failActivity('Humanization failed');
   } finally {
     busy(false);
   }
@@ -426,19 +602,27 @@ async function humanize() {
 
 async function uploadFile(file) {
   if (!file) return;
-  busy(true,'Reading document and running AI detection…');
+  busy(true,'Extracting document text…');
+  startActivity('upload', 'Upload document', `Preparing ${file.name}…`);
   const form = new FormData();
-  form.append('file',file);
+  form.append('file',file,file.name);
   try {
     const response=await api('/api/upload',{method:'POST',body:form});
     const data=await response.json();
-    if ($('sourceText')) $('sourceText').value=data.text;
+    if (!data.text || !String(data.text).trim()) throw new Error('The document was read but no usable text was extracted.');
+    if ($('sourceText')) {
+      $('sourceText').value=data.text;
+      $('sourceText').focus();
+      $('sourceText').scrollTop=0;
+    }
     if ($('revisedText')) $('revisedText').value='';
-    updateDashboard(data.report);
+    currentReport=null;
     activateTab('detector');
-    setMessage(`${data.filename} loaded and screened.`, 'success');
+    setMessage(`${data.filename || file.name} extracted to Source text. Click Detect AI when ready.`, 'success');
+    completeActivity('Text extracted to Source text');
   } catch(e) {
-    setMessage(e.message,'error');
+    setMessage(`Upload failed: ${e.message}`,'error');
+    failActivity('Document upload or extraction failed');
   } finally {
     busy(false);
     if ($('fileInput')) $('fileInput').value='';
@@ -455,6 +639,8 @@ function activateTab(name) {
 async function exportFile(url, annotated, filename) {
   const text = (($('revisedText')?.value || $('sourceText')?.value) || '').trim();
   if (!text) return setMessage('There is no text to export.','error');
+  busy(true, 'Preparing export…');
+  startActivity('export', 'Export file', `Preparing ${filename}…`);
   try {
     const response=await api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'Scholarly Humanizer Output',annotated})});
     const blob=await response.blob();
@@ -463,8 +649,38 @@ async function exportFile(url, annotated, filename) {
     link.download=filename;
     link.click();
     URL.revokeObjectURL(link.href);
+    setMessage(`${filename} exported.`, 'success');
+    completeActivity('Export ready');
   } catch(e) {
     setMessage(e.message,'error');
+    failActivity('Export failed');
+  } finally {
+    busy(false);
+  }
+}
+
+async function exportHumanizedWord() {
+  const text = ($('revisedText')?.value || '').trim();
+  if (!text) return setMessage('Humanize the source text first, then export the revised text to Word.','error');
+  busy(true, 'Preparing Word export…');
+  startActivity('export', 'Export humanized Word', 'Preparing revised text…');
+  try {
+    const response=await api('/api/export/docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'',annotated:false})});
+    const blob=await response.blob();
+    const link=document.createElement('a');
+    link.href=URL.createObjectURL(blob);
+    link.download='humanized_scholarly_text.docx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+    setMessage('Humanized text exported to Word (.docx).','success');
+    completeActivity('Word document ready');
+  } catch(e) {
+    setMessage(e.message,'error');
+    failActivity('Word export failed');
+  } finally {
+    busy(false);
   }
 }
 
@@ -482,8 +698,8 @@ function syncEngineControls() {
   const hint = $('engine2Hint');
   if (hint && usingEngine2) {
     hint.textContent = engine2Configured
-      ? 'Engine 2 is configured. Choose Terra for stronger quality or Luna for lower-cost high-volume rewriting.'
-      : 'Engine 2 can be selected, but OPENAI_API_KEY must be added in Render before API rewriting can run.';
+      ? 'Choose V1 (Light) for lighter API refinement or V2 (Moderate) for stronger API refinement.'
+      : 'Engine 2 is not enabled on this deployment. Ask the administrator to configure API rewriting.';
   }
   try {
     if (engineSelect) localStorage.setItem('humanizer_engine', engineSelect.value);
@@ -495,7 +711,7 @@ try {
   const savedEngine = localStorage.getItem('humanizer_engine');
   const savedModel = localStorage.getItem('humanizer_engine2_model');
   if (engineSelect && ['engine1','engine2','engine3'].includes(savedEngine)) engineSelect.value = savedEngine;
-  if (engine2ModelSelect && ['gpt-5.6-terra','gpt-5.6-luna'].includes(savedModel)) engine2ModelSelect.value = savedModel;
+  if (engine2ModelSelect && ['v1','v2'].includes(savedModel)) engine2ModelSelect.value = savedModel;
 } catch (_) {}
 
 if (engineSelect) engineSelect.addEventListener('change', syncEngineControls);
@@ -520,7 +736,6 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('forensicScore')) $('forensicScore').textContent='—';
   if ($('humannessCounter')) $('humannessCounter').textContent='—';
   if ($('decisionStatus')) $('decisionStatus').textContent='—';
-  if ($('scoreSource')) $('scoreSource').textContent='—';
   if ($('wordCount')) $('wordCount').textContent='0';
   if ($('sentenceCount')) $('sentenceCount').textContent='0';
   if ($('activeSignals')) $('activeSignals').textContent='0/9';
@@ -529,10 +744,8 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('flaggedSegments')) $('flaggedSegments').textContent='0';
   if ($('statisticalFingerprint')) $('statisticalFingerprint').textContent='0%';
   if ($('engineSignalTarget')) $('engineSignalTarget').textContent='—';
-  if ($('calibrationState')) $('calibrationState').textContent='Fallback';
-  if ($('referenceLmState')) $('referenceLmState').textContent='Proxy';
   if ($('highlightedText')) {
-    $('highlightedText').textContent='Run AI detection to colour sentences by AI-style signal strength.';
+    $('highlightedText').textContent='Run AI detection to colour AI-signal areas red and no-signal areas green.';
     $('highlightedText').className='document-view empty-state';
   }
   if ($('signalColouredText')) {
@@ -555,34 +768,71 @@ $('copyBtn')?.addEventListener('click',async()=>{
   await navigator.clipboard.writeText(text);
   setMessage('Text copied.','success');
 });
-$('docxBtn')?.addEventListener('click',()=>exportFile('/api/export/docx',false,'scholarly_humanized_text.docx'));
+$('docxBtn')?.addEventListener('click',()=>exportHumanizedWord());
 $('annotatedDocxBtn')?.addEventListener('click',()=>exportFile('/api/export/docx',true,'ai_signal_diagnostic.docx'));
 $('htmlBtn')?.addEventListener('click',()=>exportFile('/api/export/html',true,'ai_signal_diagnostic.html'));
 $('addBenchmarkBtn')?.addEventListener('click',addBenchmarkSample);
-$('refreshBenchmarkBtn')?.addEventListener('click',refreshBenchmark);
+$('refreshBenchmarkBtn')?.addEventListener('click',()=>refreshBenchmark(true));
 $('trainBenchmarkBtn')?.addEventListener('click',trainBenchmark);
 $('evaluateBenchmarkBtn')?.addEventListener('click',evaluateBenchmark);
 $('adversarialAuditBtn')?.addEventListener('click',runAdversarialAudit);
+$('driftBtn')?.addEventListener('click',()=>refreshRegistryAndDrift(true));
+$('rollbackModelBtn')?.addEventListener('click',rollbackModel);
 document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>activateTab(tab.dataset.tab)));
 
+async function unlockDeveloper() {
+  const stored=sessionStorage.getItem('humanizer_developer_token') || '';
+  const token=window.prompt('Developer password', stored);
+  if (token===null) return;
+  sessionStorage.setItem('humanizer_developer_token',token);
+  if ($('developerToken')) $('developerToken').value=token;
+  busy(true, 'Unlocking developer tools…');
+  startActivity('developer', 'Developer access', 'Checking developer password…');
+  try {
+    const headers={'X-Developer-Token':token};
+    const response=await api('/api/developer/detector/status',{headers});
+    const data=await response.json();
+    ['calibrationTab','validationTab','benchmarkTab'].forEach(id=>{const el=$(id);if(el)el.hidden=false;});
+    renderBenchmarkStatus(data.benchmark || {});
+    renderValidationCentre(data.validation || {});
+    renderRegistry(data.registry || {}, null);
+    await refreshRegistryAndDrift();
+    const text=$('sourceText')?.value.trim();
+    if (text) {
+      const analysis=await api('/api/developer/analyse',{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({text})});
+      const privateReport=await analysis.json();
+      renderCalibration(privateReport);
+    } else {
+      renderCalibration({calibration:data.calibration,reference_lm:data.reference_lm,decision_status:'Private developer view'});
+    }
+    setMessage('Developer tools unlocked for this browser session.','success');
+    completeActivity('Developer tools unlocked');
+  } catch(e) {
+    sessionStorage.removeItem('humanizer_developer_token');
+    if ($('developerToken')) $('developerToken').value='';
+    setMessage(`Developer access failed: ${e.message}`,'error');
+    failActivity('Developer access failed');
+  } finally {
+    busy(false);
+  }
+}
+
+$('developerAccessBtn')?.addEventListener('click',unlockDeveloper);
+
 fetch('/api/status').then(r=>r.json()).then(data=>{
-  if ($('modelStatus')) { const cal=data.calibration?.trained ? `Calibrated on ${Number(data.calibration.sample_count||0)} samples` : 'uncalibrated fallback'; const lm=data.reference_lm?.enabled ? 'reference LM requested' : 'reference LM proxy'; $('modelStatus').textContent=`${data.model.message} · ${cal} · ${lm}`; }
-  const labEnabled = Boolean(data.benchmark_lab?.enabled);
-  ['validationTab','benchmarkTab'].forEach(id=>{ const el=$(id); if(el) el.hidden=!labEnabled; });
-  if (labEnabled) { renderBenchmarkStatus(data.benchmark_lab || {}); const saved=sessionStorage.getItem('humanizer_developer_token'); if(saved && $('developerToken')) $('developerToken').value=saved; }
+  const developerButton=$('developerAccessBtn');
+  if (developerButton) developerButton.hidden=!Boolean(data.developer_lab_available);
   const engine2 = data.engines?.engine2;
   engine2Configured = Boolean(engine2?.configured);
   const opt = $('engine2Option');
   if (opt) {
-    // Never disable Engine 2. Configuration status should explain availability, not trap the selector.
     opt.disabled = false;
-    opt.textContent = engine2Configured ? 'Engine 2, API rewrite' : 'Engine 2, API rewrite, API key required';
+    opt.textContent = 'Engine 2, API rewrite';
   }
   syncEngineControls();
 }).catch(()=>{
   engine2Configured = false;
   const opt = $('engine2Option');
-  if (opt) opt.disabled = false;
-  if ($('modelStatus')) $('modelStatus').textContent='Engine 1 active. Engine 2 is selectable but its API configuration could not be verified.';
+  if (opt) { opt.disabled = false; opt.textContent='Engine 2, API rewrite'; }
   syncEngineControls();
 });
