@@ -91,10 +91,24 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.3.0', html)
-        self.assertIn('/static/style.css?v=2.3.0', html)
+        self.assertIn('/static/app.js?v=2.4.1', html)
+        self.assertIn('/static/style.css?v=2.4.1', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
+
+    def test_activity_progress_ring_is_wired_to_requests(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        css = (root / "static" / "style.css").read_text(encoding="utf-8")
+        for element_id in ["activityProgress", "activityRing", "activityPercent", "activityTitle", "activityStage"]:
+            self.assertIn(f'id="{element_id}"', html)
+        for kind in ["upload", "detect", "humanize", "export", "train", "evaluate", "audit", "developer"]:
+            self.assertIn(f"startActivity('{kind}'", js)
+        self.assertIn('completeActivity(', js)
+        self.assertIn('failActivity(', js)
+        self.assertIn('.activity-progress', css)
+        self.assertIn('conic-gradient', css)
 
     def test_ai_detector_aggressively_corroborates_formulaic_text(self) -> None:
         ai_like = """It is important to note that digital transformation has become increasingly important. Furthermore, organizations often face key challenges in this rapidly evolving landscape. Moreover, it is clear that robust and comprehensive strategies can often lead to significant improvements. Additionally, these approaches facilitate innovation, foster collaboration, and streamline operations. What surprised me was the consistency of the pattern. The key insight is that success is not just about technology, but also about people. Taken together, this highlights the importance of a nuanced and multifaceted approach. In conclusion, organizations should leverage these insights to achieve enduring success."""
@@ -181,13 +195,13 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertNotIn("opt.disabled = !engine2?.configured", js)
         self.assertIn("opt.disabled = false", js)
 
-    def test_frontend_allows_terra_or_luna_for_engine2(self) -> None:
+    def test_frontend_allows_v1_or_v2_for_engine2(self) -> None:
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="engine2Model"', html)
-        self.assertIn('value="gpt-5.6-terra"', html)
-        self.assertIn('value="gpt-5.6-luna"', html)
+        self.assertIn('value="v1"', html)
+        self.assertIn('value="v2"', html)
         self.assertIn("engine2_model", js)
 
     def test_humanize_request_accepts_engine2_model_choice(self) -> None:
@@ -243,7 +257,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
             data = humanize(HumanizeRequest(text=SAMPLE, mode="deep", engine="engine2"))
         self.assertEqual(data["actual_engine"], "engine1_fallback")
         self.assertTrue(data["engine_2"].get("fallback_used"))
-        self.assertIn("OPENAI_API_KEY", data["engine_2"].get("reason", ""))
+        self.assertIn("not available", data["engine_2"].get("reason", "").lower())
 
     def test_deep_humanizer_makes_safe_formulaic_changes_independent_of_ai_index(self) -> None:
         formulaic = (
@@ -309,7 +323,7 @@ Markowitz, Harry. \"Portfolio Selection.\" The Journal of Finance, 1952, pp. 77-
 
 
     def test_composite_ai_score_reconciles_to_visible_components(self) -> None:
-        report = dashboard_report(SAMPLE)
+        report = dashboard_report(SAMPLE, include_private=True)
         detector = report["ai_detector"]
         weights = detector["composite_weights"]
         base = round(
@@ -393,12 +407,14 @@ Public procurement data support comparison across countries. The study uses the 
 
 
     def test_v21_statistical_fingerprint_is_exposed(self) -> None:
-        report = dashboard_report(SAMPLE)
-        detector = report["ai_detector"]
-        self.assertIn("statistical_fingerprint_percentage", report)
+        public_report = dashboard_report(SAMPLE)
+        private_report = dashboard_report(SAMPLE, include_private=True)
+        detector = public_report["ai_detector"]
+        self.assertIn("statistical_fingerprint_percentage", public_report)
         self.assertIn("statistical_fingerprint_percentage", detector)
         self.assertIn("statistical_components", detector)
-        self.assertEqual(detector["composite_weights"]["statistical"], 0.35)
+        self.assertNotIn("composite_weights", detector)
+        self.assertEqual(private_report["ai_detector"]["composite_weights"]["statistical"], 0.35)
 
     def test_signal_coloured_text_contains_ai_family_badges(self) -> None:
         text = "Furthermore, it is important to note that this study uses a comprehensive approach."
@@ -445,15 +461,18 @@ Public procurement data support comparison across countries. The study uses the 
         self.assertIn("engine_3", data)
 
 
-    def test_v22_calibration_fallback_is_explicit(self) -> None:
+    def test_v22_calibration_fallback_is_private(self) -> None:
         from services.calibration import calibration_status
         with patch.dict(os.environ, {"HUMANIZER_CALIBRATION_MODEL": "/tmp/nonexistent-humanizer-calibration.json"}, clear=False):
             status = calibration_status()
-            report = dashboard_report(SAMPLE)
+            public_report = dashboard_report(SAMPLE)
+            private_report = dashboard_report(SAMPLE, include_private=True)
         self.assertFalse(status["trained"])
-        self.assertEqual(report["score_source"], "transparent_four_layer_ensemble")
-        self.assertIn("calibration_features", report)
-        self.assertIn(report["decision_status"], {"Screening estimate", "Indeterminate"})
+        self.assertNotIn("score_source", public_report)
+        self.assertNotIn("calibration_features", public_report)
+        self.assertEqual(private_report["score_source"], "transparent_four_layer_ensemble")
+        self.assertIn("calibration_features", private_report)
+        self.assertIn(public_report["decision_status"], {"Result available", "Indeterminate"})
 
     def test_v22_meta_classifier_can_train_without_sklearn(self) -> None:
         from services.calibration import train_logistic_meta_classifier
@@ -500,8 +519,9 @@ Public procurement data support comparison across countries. The study uses the 
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('data-tab="calibration"', html)
+        self.assertIn('id="calibrationTab"', html)
         self.assertIn('id="calibrationDetails"', html)
+        self.assertIn('class="tab developer-only" data-tab="calibration" hidden', html)
         self.assertIn('id="preservationCertificate"', html)
         self.assertIn("renderCalibration", js)
         self.assertIn("renderPreservation", js)
@@ -524,7 +544,7 @@ The findings suggest that reporting remains uneven across countries.
 
 6. Conclusion
 The evidence supports continued attention to data quality."""
-        report = dashboard_report(text)
+        report = dashboard_report(text, include_private=True)
         self.assertIn("section_profile", report)
         self.assertGreaterEqual(report["section_profile"]["methods"]["segment_count"], 1)
         self.assertGreaterEqual(report["section_profile"]["results"]["segment_count"], 1)
@@ -577,6 +597,48 @@ The evidence supports continued attention to data quality."""
         self.assertIn("renderValidationCentre", js)
         self.assertIn("renderRewriteAudit", js)
         self.assertIn("renderSectionProfile", js)
+
+    def test_v24_public_ui_hides_detector_mode_and_status_banner(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('id="modelStatus"', html)
+        self.assertNotIn('id="scoreSource"', html)
+        self.assertNotIn('id="calibrationState"', html)
+        self.assertNotIn('id="referenceLmState"', html)
+        self.assertIn('id="developerAccessBtn"', html)
+        public = dashboard_report(SAMPLE)
+        self.assertNotIn("score_source", public)
+        self.assertNotIn("calibration_features", public)
+        self.assertIn("/api/developer/analyse", (root / "app.py").read_text(encoding="utf-8"))
+
+    def test_v24_engine2_uses_public_v1_v2_aliases(self) -> None:
+        from services.model_refiner import resolve_engine2_model
+        self.assertEqual(resolve_engine2_model("v1", "gpt-5.6-terra"), ("gpt-5.6-luna", "v1"))
+        self.assertEqual(resolve_engine2_model("v2", "gpt-5.6-luna"), ("gpt-5.6-terra", "v2"))
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('value="v1">V1 (Light)', html)
+        self.assertIn('value="v2" selected>V2 (Moderate)', html)
+        self.assertNotIn('GPT-5.6 Terra, recommended', html)
+        self.assertNotIn('GPT-5.6 Luna, economy', html)
+
+    def test_v24_ai_map_is_binary_red_green(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        css = (root / "static" / "style.css").read_text(encoding="utf-8")
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('.risk-low,.risk-moderate,.risk-high{background:#fecaca}', css)
+        self.assertIn('.risk-natural{background:#dcfce7}', css)
+        self.assertIn('AI-style signal detected', html)
+        self.assertIn('No AI-style signal detected', html)
+
+    def test_v24_word_export_and_upload_extraction_ui(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('Export humanized text to Word (.docx)', html)
+        self.assertIn('extracted to Source text. Click Detect AI when ready.', js)
+        self.assertIn('function exportHumanizedWord()', js)
 
 
 if __name__ == "__main__":
