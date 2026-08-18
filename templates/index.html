@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.9.0">
+  <link rel="stylesheet" href="/static/style.css?v=2.1.0">
 </head>
 <body>
   <header class="topbar">
@@ -35,6 +35,7 @@
           <select id="engine">
             <option value="engine1" selected>Engine 1, Local rewrite</option>
             <option id="engine2Option" value="engine2">Engine 2, API rewrite</option>
+            <option value="engine3">Engine 3, Signal-Guided rewrite</option>
           </select>
           <input id="useModel" type="checkbox" hidden aria-hidden="true" tabindex="-1">
         </label>
@@ -53,7 +54,7 @@
     </section>
 
     <aside class="dashboard card">
-      <div class="section-head compact"><div><h2>AI Detector</h2><p>Nine-signal forensic screening for AI-like writing patterns</p></div></div>
+      <div class="section-head compact"><div><h2>AI Detector</h2><p>Four-layer screening: forensic A–I signals, statistical fingerprint, paragraph profile and document regularity</p></div></div>
       <div class="score-board">
         <section class="score-strip detector-score">
           <div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div>
@@ -70,20 +71,24 @@
       <div class="detector-meta">
         <div><small>Signal level</small><strong id="aiVerdict">—</strong></div>
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
-        <div><small>Weighted forensic score</small><strong id="forensicScore">—</strong></div>
-        <div><small>Humanness counter-evidence</small><strong id="humannessCounter">—</strong></div>
+        <div><small>Weighted A–I score</small><strong id="forensicScore">—</strong></div>
+        <div><small>Human-context evidence</small><strong id="humannessCounter">—</strong></div>
       </div>
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
         <div><span id="sentenceCount">0</span><small>Sentences</small></div>
         <div><span id="activeSignals">0/9</span><small>Active signal categories</small></div>
         <div><span id="evidenceCount">0</span><small>Evidence items</small></div>
+        <div><span id="proseSegments">0</span><small>Prose segments screened</small></div>
+        <div><span id="flaggedSegments">0</span><small>Flagged prose segments</small></div>
+        <div><span id="statisticalFingerprint">0%</span><small>Statistical fingerprint</small></div>
+        <div><span id="engineSignalTarget">—</span><small>Engine 3 target</small></div>
       </div>
       <div class="legend">
         <span><i class="dot natural"></i>Minimal signal</span><span><i class="dot low"></i>Low signal</span>
         <span><i class="dot moderate"></i>Moderate</span><span><i class="dot high"></i>High signal</span>
       </div>
-      <div class="detector-caution" id="detectorVariability"><strong>Detector variability</strong><span>AI-writing detectors can disagree substantially, especially on formal academic prose. Use the score as a style-screening indicator, not proof of authorship.</span></div>
+      <div class="detector-caution" id="detectorVariability"><strong>Detector variability</strong><span>AI-writing detectors can disagree substantially, especially on formal academic prose. This app combines global and paragraph-level evidence. Use the score as a style-screening indicator, not proof of authorship.</span></div>
       <p class="disclaimer" id="disclaimer">This detector estimates AI-like writing patterns. It does not prove authorship.</p>
     </aside>
 
@@ -91,28 +96,40 @@
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="detector">AI signal breakdown</button>
         <button class="tab" data-tab="highlight">AI sentence map</button>
+        <button class="tab" data-tab="signalcolours">Signal-coloured text</button>
+        <button class="tab" data-tab="statistical">Statistical fingerprint</button>
         <button class="tab" data-tab="revised">Humanized text</button>
         <button class="tab" data-tab="findings">Sentence evidence</button>
         <button class="tab" data-tab="metrics">Style diagnostics</button>
       </div>
-      <div id="detectorPanel" class="panel active"><div id="detectorSignals" class="detector-signals empty-state">Run AI detection to see the nine-signal breakdown.</div></div>
+      <div id="detectorPanel" class="panel active"><div id="detectorSignals" class="detector-signals empty-state">Run AI detection to see the A–I forensic breakdown.</div></div>
       <div id="highlightPanel" class="panel">
         <div id="highlightedText" class="document-view empty-state">Run AI detection to colour sentences by AI-style signal strength.</div>
         <div id="segmentTip" class="segment-tip">Select a coloured sentence to see which AI-style signals fired.</div>
       </div>
+      <div id="signalcoloursPanel" class="panel">
+        <div class="signal-colour-legend">
+          <span class="signal-A">A Predictability</span><span class="signal-B">B Burstiness</span><span class="signal-C">C Hedging</span>
+          <span class="signal-D">D Structure</span><span class="signal-E">E Specificity</span><span class="signal-F">F Transitions</span>
+          <span class="signal-G">G Punctuation</span><span class="signal-H">H Voice/register</span><span class="signal-I">I Rhetorical scaffolding</span>
+        </div>
+        <div id="signalColouredText" class="document-view empty-state">Run AI detection to colour the text by A–I signal family.</div>
+        <div id="signalColourTip" class="segment-tip">Select a marked sentence to see its signal letters and evidence.</div>
+      </div>
+      <div id="statisticalPanel" class="panel"><div id="statisticalSignals" class="concern-categories empty-state">Run AI detection to inspect the continuous statistical fingerprint.</div></div>
       <div id="revisedPanel" class="panel">
         <textarea id="revisedText" placeholder="The protected humanized version will appear here."></textarea>
         <div class="export-row">
           <button id="copyBtn" class="secondary">Copy text</button>
           <button id="docxBtn" class="secondary">Export clean DOCX</button>
           <button id="annotatedDocxBtn" class="secondary">Export diagnostic DOCX</button>
-          <button id="htmlBtn" class="secondary">Export coloured HTML</button>
+          <button id="htmlBtn" class="secondary">Export signal-coloured HTML</button>
         </div>
       </div>
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No sentence evidence yet.</div></div>
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.9.0"></script>
+  <script src="/static/app.js?v=2.1.0"></script>
 </body>
 </html>
