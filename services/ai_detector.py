@@ -215,42 +215,21 @@ def _verdict(score: int) -> str:
 
 
 def _verdict_from_index(ai_pct: int) -> str:
-    """Keep the public verdict aligned with the public 0-100 AI signal index."""
+    """Return a descriptive signal band, not an authorship claim.
+
+    Commercial detectors can disagree sharply on polished scholarly prose, so the
+    public label describes the strength of patterns observed by this application
+    rather than asserting who or what wrote the text.
+    """
     if ai_pct < 20:
-        return "Human"
-    if ai_pct < 35:
-        return "Likely Human"
-    if ai_pct < 55:
-        return "Uncertain"
-    if ai_pct < 75:
-        return "Likely AI"
-    return "AI"
-
-
-def _fraction_from_index(ai_pct: int) -> str:
-    if ai_pct < 15:
-        return "Pure human / minimal AI-style evidence (~0–10%)"
-    if ai_pct < 35:
-        return "Lightly AI-assisted (~10–30%)"
+        return "Minimal AI-style signal"
+    if ai_pct < 40:
+        return "Low AI-style signal"
     if ai_pct < 60:
-        return "Mixed authorship (~30–60%)"
-    if ai_pct < 85:
-        return "Heavily AI-edited (~60–90%)"
-    return "Pure AI / very strong AI-style evidence (~90–100%)"
-
-
-def _fraction(score: int, scores: list[int]) -> str:
-    active = sum(1 for x in scores if x > 0)
-    strong = sum(1 for x in scores if x == 3)
-    if score <= 4:
-        return "Pure human (~0%)"
-    if score <= 8:
-        return "Lightly AI-assisted (~10–30%)"
-    if score <= 13:
-        return "Mixed authorship (~30–60%)"
-    if score <= 19 or active < 8 or strong < 5:
-        return "Heavily AI-edited (~60–90%)"
-    return "Pure AI (~100%)"
+        return "Moderate AI-style signal"
+    if ai_pct < 80:
+        return "Elevated AI-style signal"
+    return "Strong AI-style signal"
 
 
 def _confidence(text: str, score: int, scores: list[int]) -> str:
@@ -602,21 +581,12 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     ai_pct = max(0, min(100, ai_pct))
     verdict = _verdict_from_index(ai_pct)
     confidence = _confidence(raw, total, scores)
-    fraction = _fraction_from_index(ai_pct)
-    active_paragraphs = sum(1 for risk in paragraph_risks if risk >= 25)
-    if paragraph_risks:
-        share = active_paragraphs / len(paragraph_risks)
-        if share >= 0.85 and ai_pct >= 55:
-            fraction = "Heavily AI-edited (~60–90%)" if ai_pct < 85 else "Pure AI / very strong AI-style evidence (~90–100%)"
-        elif share >= 0.45 and ai_pct >= 35:
-            fraction = "Mixed authorship (~30–60%)"
-        elif 0 < share < 0.45 and ai_pct >= 15:
-            fraction = "Lightly AI-assisted (~10–30%)"
 
     calibration_notes = [
-        "The percentage is an AI-style signal score, not a calibrated probability that a machine wrote the text.",
-        "This is a stylistic AI-signal detector, not proof of authorship. Strong verdicts require corroboration across categories.",
-        "Academic writing is calibrated to reduce penalties for legitimate hedging, neutral register, lists, tricolons and semicolon use.",
+        "The percentage is an AI-style signal index, not the percentage of words written by AI and not a calibrated authorship probability.",
+        "Different AI-writing detectors can return very different results on the same polished scholarly passage because they use different models, thresholds and training data.",
+        "Strong interpretation requires corroboration across several signal families and sentence-level evidence rather than a single stylistic cue.",
+        "Academic writing is calibrated to reduce penalties for legitimate hedging, neutral register, technical vocabulary, lists, tricolons and semicolon use.",
     ]
     if wc < 100:
         calibration_notes.append("Short text under 100 words has fewer detectable signals; confidence is capped at Medium.")
@@ -638,7 +608,7 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
         "max_score": 27,
         "forensic_verdict": _verdict(total),
         "ai_detection_percentage": ai_pct,
-        "ai_edited_fraction": fraction,
+        "signal_level": verdict,
         "signals": signals,
         "what_gave_it_away": gave_away.strip(),
         "calibration_notes": calibration_notes,
@@ -652,4 +622,8 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
         "high_sentence_count": high_sentence_count,
         "paragraph_ai_signal_percentage": paragraph_ai_pct,
         "paragraph_signal_profile": paragraph_risks,
+        "detector_variability_notice": (
+            "AI-writing detectors can disagree substantially, especially on formal academic prose. "
+            "Use this score as a style-screening indicator, not proof of authorship."
+        ),
     }

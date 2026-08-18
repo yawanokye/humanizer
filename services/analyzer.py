@@ -611,10 +611,10 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "human_like_style_percentage": human_like_style,
         "ai_detector": detector,
         "ai_verdict": detector["verdict"],
+        "ai_signal_level": detector["verdict"],
         "ai_confidence": detector["confidence"],
         "ai_score": detector["overall_score"],
         "ai_score_max": detector["max_score"],
-        "ai_edited_fraction": detector["ai_edited_fraction"],
         "ai_signal_breakdown": detector["signals"],
         # Internal/backward-compatible rewrite-quality field. The dashboard does not
         # use this as the complement of AI Signal.
@@ -633,8 +633,9 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "metrics": global_report,
         "disclaimer": (
             "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
-            "The AI Signal combines document-level patterns with sentence-level evidence, so the category statistics below are the primary explanation of the score. "
-            "They describe detected writing patterns, not the true identity of the author. Scholarly prose is calibrated for legitimate hedging, technical vocabulary, lists and punctuation."
+            "AI Signal is not the percentage of words written by AI and does not prove authorship. Different detectors may disagree substantially on the same scholarly text. "
+            "Interpret the score together with the nine signal categories, evidence items and sentence map."
         ),
+        "detector_variability_notice": detector.get("detector_variability_notice", ""),
     }
 

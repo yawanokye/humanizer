@@ -134,6 +134,8 @@ def _system_prompt(mode: str = "balanced") -> str:
         "You are a preservation-gated scholarly style editor. Improve natural scholarly voice, flow, rhythm, specificity, and sentence variety. "
         + depth + " "
         "Do not insert typos, slang, fake uncertainty, invented examples or unsupported claims. "
+        "Treat names, emails, dates, numbers, percentages, citations, references, URLs, DOIs, equations, tables, table headers, figure captions, headings, tickers and statistical notation as locked content. "
+        "You may rewrite prose around those items, but do not alter, omit, invent, reorder or relabel any locked item. "
         "Return only the revised passage. Never add analysis or markdown fences.\n\nRules:\n" + rules
     )
 
