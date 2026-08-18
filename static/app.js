@@ -559,14 +559,46 @@ async function analyse() {
   }
 }
 
+function delay(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
+
+async function waitForHumanizeJob(jobId) {
+  const deadline = Date.now() + (20 * 60 * 1000);
+  let transientFailures = 0;
+  clearInterval(activityTimer);
+  while (Date.now() < deadline) {
+    await delay(1200);
+    let response;
+    try {
+      response = await api(`/api/humanize/jobs/${encodeURIComponent(jobId)}`, {method:'GET', cache:'no-store'});
+      transientFailures = 0;
+    } catch (error) {
+      transientFailures += 1;
+      if (transientFailures <= 4 && /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || error))) {
+        setActivityProgress(Math.min(94, activityProgressValue), 'Connection interrupted briefly. Reconnecting to job…');
+        await delay(1500 * transientFailures);
+        continue;
+      }
+      throw error;
+    }
+    const job = await response.json();
+    setActivityProgress(Number(job.progress ?? activityProgressValue), job.stage || 'Humanization in progress…');
+    if (job.status === 'completed') return job.result;
+    if (job.status === 'failed') throw new Error(job.error || 'Humanization job failed.');
+  }
+  throw new Error('Humanization is still running after 20 minutes. Please retry or use a lighter rewrite mode.');
+}
+
 async function humanize() {
   const text = $('sourceText')?.value.trim();
   if (!text) return setMessage('Add text before humanising.', 'error');
   busy(true, 'Applying protected scholarly refinement…');
-  startActivity('humanize', 'Humanize scholarly text', 'Preparing protected rewrite…');
+  startActivity('humanize', 'Humanize scholarly text', 'Submitting protected rewrite job…');
   try {
-    const response = await api('/api/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2'})});
-    const data = await response.json();
+    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2'})});
+    const started = await startResponse.json();
+    if (!started.job_id) throw new Error('Humanization job could not be started.');
+    setActivityProgress(Number(started.progress ?? 2), started.stage || 'Queued for humanization…');
+    const data = await waitForHumanizeJob(started.job_id);
     if ($('revisedText')) $('revisedText').value=data.text;
     const aiImprovement = data.ai_signal_improvement || {};
     const humanLikeImprovement = data.human_like_style_improvement || {
