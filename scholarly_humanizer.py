@@ -80,6 +80,12 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bThis stability suggests\b", re.I), "The stability suggests"),
     (re.compile(r"\bThis design distinguishes\b", re.I), "The design distinguishes"),
     (re.compile(r"\bThis choice is applied\b", re.I), "The choice is applied"),
+    (re.compile(r"\bThe present assignment\b", re.I), "The assignment"),
+    (re.compile(r"\bThe present analysis\b", re.I), "The analysis"),
+    (re.compile(r"\bThe present report\b", re.I), "The report"),
+    (re.compile(r"\bin nontechnical terms,\s*", re.I), "In practical terms, "),
+    (re.compile(r"\bfor faster visual comparison\b", re.I), "for easier visual comparison"),
+    (re.compile(r"\bprovides an explicit\b", re.I), "provides a clear"),
 )
 
 _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
@@ -111,6 +117,9 @@ _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\butili[sz]e\b", re.I),
     re.compile(r"\bmultifaceted\b", re.I),
     re.compile(r"\bthis (?:highlights|underscores|demonstrates) the importance\b", re.I),
+    re.compile(r"\bthe present assignment\b", re.I),
+    re.compile(r"\bthe present analysis\b", re.I),
+    re.compile(r"\bthe present report\b", re.I),
 )
 
 _GENERIC_CONNECTOR_RE = re.compile(
@@ -137,15 +146,24 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z])(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\
 _PLACEHOLDER_RE = re.compile(r"\[[^\]\n]+\]")
 _URL_RE = re.compile(r"https?://\S+|\bdoi:\s*\S+|\b10\.\d{4,9}/\S+", re.I)
 _CITATION_BLOCK_RE = re.compile(r"\([^()\n]{0,260}\b(?:19|20)\d{2}[a-z]?\b[^()\n]{0,260}\)", re.I)
-_HEADING_LINE_RE = re.compile(r"(?m)^\s*(?:#{1,6}\s+.+|CHAPTER\s+(?:\d+|[A-Z]+)(?:\s+.+)?|\d+\.\d+(?:\.\d+){0,3}\s+[A-Z][^\n]{1,150})\s*$", re.I)
+_HEADING_LINE_RE = re.compile(r"(?m)^[ \t]*(?:#{1,6}\s+.+|CHAPTER\s+(?:\d+|[A-Z]+)(?:\s+.+)?|\d+(?:\.\d+){0,3}[.)]?\s+[A-Z][^\n]{1,150}|(?:Executive Summary|Abstract|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography))[ \t]*$", re.I)
 _NUMBERED_ITEM_RE = re.compile(r"(?m)^\s*\d+[.)]\s+[^\n]+$")
 _DISPLAY_EQUATION_RE = re.compile(r"\$\$.*?\$\$", re.S)
 _TABLE_LINE_RE = re.compile(r"(?m)^\s*\|[^\n]+\|\s*$")
 _SECTION_HEADING_RE = re.compile(
-    r"^(?:#{1,6}\s+.+|CHAPTER\s+(?:\d+|[A-Z]+)(?:\s+.+)?|\d+\.\d+(?:\.\d+){0,3}\s+[A-Z][^\n]{1,150})$",
+    r"^(?:#{1,6}\s+.+|CHAPTER\s+(?:\d+|[A-Z]+)(?:\s+.+)?|\d+(?:\.\d+){0,3}[.)]?\s+[A-Z][^\n]{1,150}|(?:Executive Summary|Abstract|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography|Appendix(?:es)?(?:\s+.+)?))$",
     re.I,
 )
-_REFERENCE_HEADING_RE = re.compile(r"^(?:#{1,6}\s*)?(?:References|Bibliography|Source Use Audit|Appendix|Appendices)\b", re.I)
+_REFERENCE_HEADING_RE = re.compile(r"^(?:#{1,6}\s*)?(?:References|Works Cited|Bibliography|Source Use Audit|Appendix|Appendices)\b", re.I)
+
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_TABULAR_LINE_RE = re.compile(r"(?m)^[^\n]*(?:\t|\s\|\s)[^\n]*$")
+_FORM_LINE_RE = re.compile(r"^(?:FULL LEGAL NAME|LOCATION(?: \(COUNTRY\))?|EMAIL ADDRESS|MARK X|Team member\s+\d+|Statement of integrity|Use the box below|Note:|N/A\b)", re.I)
+_FIGURE_TABLE_LINE_RE = re.compile(r"^(?:Table|Figure)\s+\d+[A-Za-z]?[.:]?\s", re.I)
+_INLINE_EQUATION_RE = re.compile(r"\b[A-Za-zπΣΔ][A-Za-z0-9_πΣΔ]*\s*=\s*[^.;\n]{1,100}")
+_PARENTHETICAL_EVIDENCE_RE = re.compile(r"\([^()\n]{0,260}\d[^()\n]{0,260}\)")
+_ACRONYM_RE = re.compile(r"\b[A-Z]{2,10}(?:_[A-Z0-9]+)?\b")
+_PROPER_MULTIWORD_RE = re.compile(r"\b[A-Z][a-z]+(?:[-'][A-Za-z]+)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z]+)?)+\b")
 
 
 def _normalise_variation_level(value: str, *, default: str = "high") -> str:
@@ -364,25 +382,97 @@ def analyse_scholarly_style(text: str) -> dict[str, Any]:
     }
 
 
+def _is_protected_line(line: str) -> bool:
+    value = str(line or "").strip()
+    if not value:
+        return True
+    if "\t" in line or " | " in line:
+        return True
+    if _HEADING_LINE_RE.fullmatch(value) or _REFERENCE_HEADING_RE.match(value):
+        return True
+    if _FIGURE_TABLE_LINE_RE.match(value) or _FORM_LINE_RE.match(value):
+        return True
+    if value.startswith("#") or re.fullmatch(r"CHAPTER\s+(?:\d+|[A-Z]+)", value, re.I):
+        return True
+    if value.startswith("|") or re.match(r"^\|?\s*:?-{3,}", value):
+        return True
+    if re.match(r"^(?:[-*+•]\s+|\d+[.)]\s+)", value):
+        # Lists often encode recommendations, objectives or factor definitions.
+        # Keep them exact in the local engine unless the user edits them manually.
+        return True
+    if "```" in value or "$$" in value:
+        return True
+    if _EMAIL_RE.search(value) and len(value.split()) <= 16:
+        return True
+    if _INLINE_EQUATION_RE.search(value) and len(value.split()) <= 22:
+        return True
+    if len(value.split()) <= 14 and value.isupper():
+        return True
+    return False
+
+
 def _is_protected_block(block: str) -> bool:
     value = str(block or "").strip()
     if not value:
         return True
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    lines = [line for line in value.splitlines() if line.strip()]
     if not lines:
         return True
-    if lines[0].startswith("#") or re.fullmatch(r"CHAPTER\s+(?:\d+|[A-Z]+)", lines[0], re.I):
-        return True
-    if "```" in value or "$$" in value:
-        return True
-    if any(line.startswith("|") for line in lines) or any(re.match(r"^\|?\s*:?-{3,}", line) for line in lines):
-        return True
-    if all(re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", line) for line in lines):
-        return True
-    if len(lines) == 1 and len(lines[0].split()) <= 14 and lines[0].isupper():
-        return True
-    return False
+    # A run made entirely of structural rows should bypass rewriting unchanged.
+    return all(_is_protected_line(line) for line in lines)
 
+
+def _mask_protected_spans(text: str) -> tuple[str, dict[str, str]]:
+    """Shield evidence-bearing spans while local cadence edits run.
+
+    This is intentionally stricter than the final preservation validator. It means
+    Engine 1 may change sentence shape around a citation, statistic, equation or
+    named technical identifier, but the protected span itself is restored exactly.
+    """
+    value = str(text or "")
+    protected: dict[str, str] = {}
+    patterns = (
+        _EMAIL_RE,
+        _URL_RE,
+        _PLACEHOLDER_RE,
+        _INLINE_EQUATION_RE,
+        _PARENTHETICAL_EVIDENCE_RE,
+        _PROPER_MULTIWORD_RE,
+        _ACRONYM_RE,
+        _NUMBER_RE,
+    )
+    for pattern in patterns:
+        def repl(match: re.Match[str]) -> str:
+            token = chr(0xE000 + len(protected))
+            protected[token] = match.group(0)
+            return token
+        value = pattern.sub(repl, value)
+    return value, protected
+
+
+def _restore_protected_spans(text: str, protected: dict[str, str]) -> str:
+    value = str(text or "")
+    for token, original in protected.items():
+        value = value.replace(token, original)
+    return value
+
+
+def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: str) -> str:
+    """Refine prose lines while copying structural/table/form lines byte-for-byte."""
+    value = str(block or "")
+    lines = value.splitlines(keepends=True)
+    if not any(_is_protected_line(line) for line in lines if line.strip()):
+        return _refine_paragraph(value, connector_seen, level=level)
+
+    out: list[str] = []
+    for line in lines:
+        ending = "\n" if line.endswith("\n") else ""
+        core = line[:-1] if ending else line
+        if not core.strip() or _is_protected_line(core):
+            out.append(line)
+        else:
+            out.append(_refine_paragraph(core, connector_seen, level=level) + ending)
+    return "".join(out)
 
 def _apply_case(source: str, replacement: str) -> str:
     if source.isupper():
@@ -468,7 +558,7 @@ def _split_long_compound_sentences(paragraph: str) -> str:
     """Split only long independent-clause joins where the second clause has an explicit subject."""
     sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
     revised: list[str] = []
-    subject = r"(?:the|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study)"
+    subject = r"(?:(?:the|a|an)\s+[A-Za-z][A-Za-z'-]*|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study|portfolio|model|simulation|optimiser|optimizer|constraint|allocation)"
     splitter = re.compile(rf",\s+(and|but)\s+(?={subject}\b)", re.I)
     for sentence in sentences:
         if _word_count(sentence) < 28:
@@ -504,7 +594,7 @@ def _split_long_contrast_sentences(paragraph: str) -> str:
     sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
     revised: list[str] = []
     explicit_subject = re.compile(
-        r"^(?:the|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study|convergence|performance|returns|weights|exposure)\b",
+        r"^(?:(?:the|a|an)\s+[A-Za-z][A-Za-z'-]*|this|these|those|it|they|we|researchers|students|institutions|organisations|organizations|authors|results|findings|evidence|analysis|study|convergence|performance|returns|weights|exposure|portfolio|model|simulation|allocation)\b",
         re.I,
     )
     for sentence in sentences:
@@ -530,9 +620,30 @@ def _split_long_contrast_sentences(paragraph: str) -> str:
     return " ".join(revised)
 
 
+def _split_long_colon_clauses(paragraph: str) -> str:
+    """Split long colon joins only when the right side is an independent clause."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    revised: list[str] = []
+    for sentence in sentences:
+        if _word_count(sentence) < 24 or sentence.count(":") != 1:
+            revised.append(sentence)
+            continue
+        left, right = [part.strip() for part in sentence.split(":", 1)]
+        if _word_count(left) < 9 or _word_count(right) < 8:
+            revised.append(sentence)
+            continue
+        if not re.match(r"^(?:it|they|we|this|these|those|the\s+[A-Za-z][A-Za-z'-]*|a\s+[A-Za-z][A-Za-z'-]*|an\s+[A-Za-z][A-Za-z'-]*)\b", right, re.I):
+            revised.append(sentence)
+            continue
+        right = right[:1].upper() + right[1:] if right[:1].islower() else right
+        revised.extend([left.rstrip(".!?") + ".", right])
+    return " ".join(revised)
+
+
 def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced") -> str:
     """Refine one paragraph with progressively stronger, meaning-safe edits."""
-    value = paragraph.strip()
+    original_value = paragraph.strip()
+    value, protected = _mask_protected_spans(original_value)
     for pattern, replacement in _LEGACY_ARTIFACT_PATTERNS:
         value = pattern.sub(replacement, value)
     for pattern, replacement in _SAFE_PHRASE_REPLACEMENTS:
@@ -547,19 +658,21 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
         if level == "deep":
             value = _split_long_compound_sentences(value)
             value = _split_long_contrast_sentences(value)
+            value = _split_long_colon_clauses(value)
 
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
     value = re.sub(r"([.!?])\s*([A-Z])", r"\1 \2", value)
     value = re.sub(r",\s*,", ",", value)
     value = _repair_sentence_initial_caps(value)
+    value = _restore_protected_spans(value, protected)
     return value.strip()
 
 
 def _signature(text: str) -> dict[str, list[str]]:
     value = str(text or "")
     return {
-        "headings": _HEADING_LINE_RE.findall(value),
+        "headings": [match.strip() for match in _HEADING_LINE_RE.findall(value)],
         "years": _YEAR_RE.findall(value),
         "numbers": _NUMBER_RE.findall(value),
         "placeholders": _PLACEHOLDER_RE.findall(value),
@@ -568,6 +681,10 @@ def _signature(text: str) -> dict[str, list[str]]:
         "numbered_items": _NUMBERED_ITEM_RE.findall(value),
         "display_equations": _DISPLAY_EQUATION_RE.findall(value),
         "table_lines": _TABLE_LINE_RE.findall(value),
+        "tabular_lines": _TABULAR_LINE_RE.findall(value),
+        "emails": _EMAIL_RE.findall(value),
+        "reference_headings": [line.strip() for line in value.splitlines() if _REFERENCE_HEADING_RE.match(line.strip())],
+        "equationish": _INLINE_EQUATION_RE.findall(value),
     }
 
 
@@ -576,7 +693,7 @@ def validate_humanizer_preservation(original: str, candidate: str, *, max_word_c
     reasons: list[str] = []
     before = _signature(original)
     after = _signature(candidate)
-    for key in ("headings", "years", "numbers", "placeholders", "urls", "citation_blocks", "numbered_items", "display_equations", "table_lines"):
+    for key in ("headings", "years", "numbers", "placeholders", "urls", "citation_blocks", "numbered_items", "display_equations", "table_lines", "tabular_lines", "emails", "reference_headings", "equationish"):
         if before[key] != after[key]:
             reasons.append(f"{key} changed")
 
@@ -678,9 +795,10 @@ def build_humanizer_batches(text: str, *, max_words: int = 2600) -> list[dict[st
 def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dict[str, Any]]:
     """Improve scholarly naturalness with preservation-gated local editing.
 
-    Engine 1 is deliberately conservative. It creates progressively stronger
-    rule-based candidates, verifies academic evidence preservation, scores each
-    candidate for naturalness, and keeps only the best non-degrading version.
+    Engine 1 is aggressive on editable prose but conservative on evidence. It creates
+    progressively stronger rule-based cadence candidates, locks structural and
+    evidence-bearing spans, verifies preservation, and keeps the strongest safe
+    non-degrading version.
     """
     original = str(text or "")
     normalised_mode = str(mode or "balanced").strip().lower()
@@ -722,15 +840,15 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
                 output.append(part)
                 continue
             stripped = part.strip()
-            if re.match(r"^#{1,6}\s*(?:References|Bibliography|Source Use Audit|Appendix|Appendices)\b", stripped, re.I):
+            if _REFERENCE_HEADING_RE.match(stripped):
                 reference_tail = True
             if reference_tail or _is_protected_block(part):
                 output.append(part)
                 continue
-            output.append(_refine_paragraph(part, connector_seen, level=level))
+            output.append(_refine_mixed_block(part, connector_seen, level=level))
 
         candidate = "".join(output)
-        candidate = re.sub(r"[ \t]+\n", "\n", candidate)
+        candidate = re.sub(r" +\n", "\n", candidate)
         candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
         valid, issues = validate_humanizer_preservation(
             original, candidate, max_word_change_ratio=local_change_limit

@@ -4,19 +4,19 @@ A FastAPI web application built from the supplied `scholarly_humanizer.py` modul
 
 ## AI Detector and Human-like Style workflow
 
-The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable score, verdict, confidence and estimated AI-edited fraction. The second headline metric is **Human-like Style**, defined exactly as `100 - AI Signal`. This keeps the public scores simple and mathematically consistent without claiming that the tool can prove who wrote the text.
+The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable AI Signal Index, descriptive signal level, confidence, 0–27 forensic category score, evidence counts and sentence map. The second headline metric is **Human-like Style**, defined exactly as `100 - AI Signal`. The interface does not estimate what percentage of the document was "written by AI" because detector scores are not reliable authorship fractions.
 
 The existing humanizer still uses its internal Naturalness metric to choose the best preservation-safe rewrite. Engine 1 generates progressively stronger local candidates for Light, Balanced and Deep modes, then keeps the strongest candidate that does not reduce internal rewrite quality. Deep is the default. Engine 2 applies the same preservation gate to API-refined batches. After rewriting, the visible AI Signal is recalculated from the revised text and Human-like Style is displayed as its exact complement.
 
 ## Core features
 
 - Paste text or upload TXT, Markdown, DOCX and text-based PDF files.
-- AI Detector as the primary dashboard, with a 0–27 nine-signal score, verdict, confidence and AI-edited fraction estimate.
+- AI Detector as the primary dashboard, with a 0–100 AI Signal Index, a 0–27 nine-signal forensic score, descriptive signal level and confidence.
 - Complementary Human-like Style score, always `100 - AI Signal`.
 - Internal Naturalness scoring remains part of rewrite selection but is not a headline detector metric.
 - Nine signal families: perplexity/predictability, burstiness, hedge density, structural tells, specificity, transitions, punctuation, voice/register and rhetorical scaffolding.
 - Sentence-level AI-signal colour map with explainable reasons and category evidence. The headline diagnostic counters show active signal categories and evidence items so they reconcile with the document-level index.
-- Engine 1, Local rewrite, protected humanisation that preserves headings, numbers, years, citations, URLs, equations, tables and action placeholders.
+- Engine 1, Local rewrite, evidence-locked humanisation that preserves names, emails, headings, numbers, years, citations, references, URLs, DOIs, equations, tables, form rows and action placeholders.
 - Engine 2, API rewrite, optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
 - Light, balanced and deep modes.
 - Clean DOCX, annotated DOCX and coloured HTML export.
@@ -25,11 +25,11 @@ The existing humanizer still uses its internal Naturalness metric to choose the 
 
 ## Important interpretation
 
-The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal index, not a calibrated probability and not proof of authorship. Version 1.7 combines category severity with evidence density, prose-sentence risk and paragraph-level distribution. Strong verdicts require corroboration across multiple signal families. Academic prose is calibrated so technical terms such as “robust”, ordinary statistical “between X and Y” phrasing, citation semicolons, normal lists and neutral scholarly register do not become strong evidence by themselves. If there are no flagged prose sentences and the global category evidence is not strong, the public index is capped below the moderate band.
+The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal index, not a calibrated probability, not the percentage of words written by AI, and not proof of authorship. Version 1.8 retains the nine-signal forensic core but replaces authorship-style verdicts with descriptive bands: Minimal, Low, Moderate, Elevated and Strong AI-style signal. The dashboard also warns that commercial detectors can disagree substantially on the same scholarly passage because their models, thresholds and training data differ. Academic prose is calibrated so technical terms such as “robust”, ordinary statistical “between X and Y” phrasing, citation semicolons, normal lists and neutral scholarly register do not become strong evidence by themselves.
 
 ## Rewrite engines
 
-- **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. It removes low-risk formulaic phrasing, repeated connectors and some overloaded sentence structures while preserving academic evidence signatures.
+- **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. Deep mode is now aggressive on editable prose cadence while names, emails, numbers, percentages, citations, references, tables, headings, equations and other evidence-bearing spans are locked. The engine can remove formulaic phrasing, repeated connectors and safe overloaded sentence joins without changing the protected content.
 - **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and the API base URL. Add the secret `OPENAI_API_KEY` during deployment. If the key is missing, the app now states that Engine 1 fallback was used instead of reporting an unchanged Engine 2 rewrite. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers internal rewrite quality.
 
 ## Deploy to Render with Blueprint
@@ -114,4 +114,4 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.7.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.8.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.

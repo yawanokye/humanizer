@@ -41,9 +41,11 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - Use access control before exposing the service to a restricted institutional audience.
 
 
-## Version 1.7 detector/rewrite consistency
+## Version 1.8 detector calibration and evidence-locked rewriting
 
-- The dashboard counters now report **Active signal categories** and **Evidence items**, which directly explain the document-level AI Signal Index.
-- Sentence-level high/moderate counts are no longer used as the headline statistics because document-level signals such as burstiness can exist without a single high-risk sentence.
+- The dashboard no longer displays an estimated AI-edited fraction. It shows the **AI Signal Index**, its exact **Human-like Style** complement, **Signal level**, **Forensic category score**, **Active signal categories** and **Evidence items**.
+- Signal levels are descriptive rather than authorship claims: Minimal, Low, Moderate, Elevated and Strong AI-style signal.
+- A detector-variability notice explains that different AI-writing detectors can disagree substantially on the same polished scholarly passage.
+- Engine 1 Deep mode is more active on editable prose, but form rows, names, emails, tables, numbers, citations, references, equations, headings, URLs and DOIs are locked and validated before an edit is accepted.
 - Academic calibration excludes common technical uses such as Huber robust regression, ordinary statistical “between X and Y” phrasing and semicolons inside citations from inflated AI-style evidence.
 - If Engine 2 is selected without `OPENAI_API_KEY`, the response explicitly reports **Engine 1 fallback**. Add the secret under Render → Environment and redeploy/restart the service for Engine 2 to run.
