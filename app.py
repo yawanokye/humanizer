@@ -15,8 +15,9 @@ from services.analyzer import dashboard_report
 from services.calibration import calibration_status
 from services.reference_lm import reference_lm_status
 from services.benchmark import (
-    ALLOWED_PROVENANCE, add_sample, benchmark_enabled, corpus_status, evaluate_model,
-    train_from_benchmark, validation_status, verify_developer_token,
+    ALLOWED_PROVENANCE, add_sample, benchmark_enabled, corpus_status, developer_token_configured, evaluate_model,
+    train_from_benchmark, validation_status, verify_developer_token, registry_status,
+    promote_model, rollback_model, drift_status,
 )
 from services.document_io import build_annotated_docx, build_docx, extract_text
 from services.model_refiner import provider_status, refine_with_model
@@ -28,8 +29,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.3.0",
-    description="Benchmark-calibrated, section-aware multi-layer AI-style screening with held-out model selection, Validation Centre, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
+    version="2.4.0",
+    description="Private-calibrated, robustness-tested scholarly AI-style screening with locked-test validation, model registry, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -41,7 +42,7 @@ class TextRequest(BaseModel):
 class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
     engine: Literal["engine1", "engine2", "engine3"] = "engine1"
-    engine2_model: Literal["gpt-5.6-terra", "gpt-5.6-luna"] = "gpt-5.6-terra"
+    engine2_model: Literal["v1", "v2", "gpt-5.6-terra", "gpt-5.6-luna"] = "v2"
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
 
@@ -63,6 +64,10 @@ class BenchmarkSampleRequest(TextRequest):
 
 class AdversarialAuditRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "deep"
+
+
+class ModelRegistryRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=160)
 
 
 def _validate_size(text: str) -> str:
@@ -127,43 +132,53 @@ def healthz() -> dict[str, str]:
 
 @app.get("/api/status")
 def status() -> dict:
+    """Public capability status. Detector internals stay behind developer access."""
     provider = provider_status()
-    engines = dict(provider.get("engines", {}) or {})
-    engines.setdefault("engine1", {"configured": True, "label": "Engine 1, Local rewrite"})
-    engines["engine3"] = {
-        "configured": True,
-        "label": "Engine 3, Signal-Guided rewrite",
-        "message": "Local signal-guided rewrite is ready. It targets detected A-I style signals and uses the preservation gate.",
-    }
+    configured = bool(provider.get("configured"))
     return {
         "ok": True,
         "version": app.version,
-        "model": provider,
-        "engines": engines,
+        "engines": {
+            "engine1": {"configured": True, "label": "Engine 1, Local rewrite"},
+            "engine2": {"configured": configured, "label": "Engine 2, API rewrite"},
+            "engine3": {"configured": True, "label": "Engine 3, Signal-Guided rewrite"},
+        },
         "max_input_chars": MAX_INPUT_CHARS,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
-        "calibration": calibration_status(),
-        "reference_lm": reference_lm_status(),
-        "benchmark_lab": corpus_status(),
+        "developer_lab_available": benchmark_enabled() and developer_token_configured(),
     }
 
 
-@app.get("/api/calibration/status")
-def get_calibration_status() -> dict:
-    return {"calibration": calibration_status(), "reference_lm": reference_lm_status()}
+@app.get("/api/developer/detector/status")
+def get_private_detector_status(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    return {
+        "calibration": calibration_status(),
+        "reference_lm": reference_lm_status(),
+        "benchmark": corpus_status(),
+        "validation": validation_status(),
+        "registry": registry_status(),
+    }
 
+@app.post("/api/developer/analyse")
+def developer_analyse(payload: TextRequest, x_developer_token: str | None = Header(default=None)) -> dict:
+    """Private detector analysis including calibration/probability internals."""
+    _require_benchmark_access(x_developer_token)
+    return dashboard_report(_validate_size(payload.text), include_private=True)
 
 def _require_benchmark_access(token: str | None) -> None:
     if not benchmark_enabled():
-        raise HTTPException(status_code=404, detail="Benchmark Lab is disabled. Set HUMANIZER_BENCHMARK_LAB_ENABLED=true to enable it.")
+        raise HTTPException(status_code=404, detail="Benchmark Lab is disabled.")
+    if not developer_token_configured():
+        raise HTTPException(status_code=503, detail="Developer access is locked because HUMANIZER_DEVELOPER_TOKEN is not configured.")
     if not verify_developer_token(token):
-        raise HTTPException(status_code=403, detail="Invalid or missing developer token.")
+        raise HTTPException(status_code=403, detail="Invalid developer password.")
 
 
 @app.get("/api/developer/benchmark/status")
 def benchmark_status_endpoint(x_developer_token: str | None = Header(default=None)) -> dict:
     _require_benchmark_access(x_developer_token)
-    return {"benchmark": corpus_status(), "calibration": calibration_status(), "validation": validation_status()}
+    return {"benchmark": corpus_status(), "calibration": calibration_status(), "validation": validation_status(), "reference_lm": reference_lm_status(), "registry": registry_status()}
 
 
 @app.post("/api/developer/benchmark/sample")
@@ -194,7 +209,7 @@ def benchmark_train(x_developer_token: str | None = Header(default=None)) -> dic
         result = train_from_benchmark()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "calibration": calibration_status(), "validation": result["validation"], "selected_model": result["model"].get("model_type"), "candidate_metrics": result["model"].get("candidate_metrics") or {}}
+    return {"ok": True, "calibration": calibration_status(), "validation": result["validation"], "selected_model": result["model"].get("model_type"), "candidate_metrics": result["model"].get("candidate_metrics") or {}, "registry": result.get("registry") or registry_status()}
 
 
 @app.post("/api/developer/benchmark/evaluate")
@@ -207,15 +222,47 @@ def benchmark_evaluate(x_developer_token: str | None = Header(default=None)) -> 
     return {"ok": True, "validation": report}
 
 
+@app.get("/api/developer/benchmark/registry")
+def benchmark_registry(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    return {"ok": True, "registry": registry_status()}
+
+
+@app.post("/api/developer/benchmark/promote")
+def benchmark_promote(payload: ModelRegistryRequest, x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    try:
+        result = promote_model(payload.model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "result": result, "registry": registry_status(), "calibration": calibration_status()}
+
+
+@app.post("/api/developer/benchmark/rollback")
+def benchmark_rollback(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    try:
+        result = rollback_model()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "result": result, "registry": registry_status(), "calibration": calibration_status()}
+
+
+@app.get("/api/developer/benchmark/drift")
+def benchmark_drift(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    return {"ok": True, "drift": drift_status()}
+
+
 @app.post("/api/developer/benchmark/adversarial-audit")
 def adversarial_audit(payload: AdversarialAuditRequest, x_developer_token: str | None = Header(default=None)) -> dict:
     _require_benchmark_access(x_developer_token)
     original = _validate_size(payload.text)
-    before = dashboard_report(original)
+    before = dashboard_report(original, include_private=True)
     engine1_text, engine1 = humanize_scholarly_text(original, mode=payload.mode)
-    engine1_after = dashboard_report(engine1_text)
+    engine1_after = dashboard_report(engine1_text, include_private=True)
     engine3_text, engine3 = humanize_signal_guided(original, detector=before.get("ai_detector", {}), mode=payload.mode)
-    engine3_after = dashboard_report(engine3_text)
+    engine3_after = dashboard_report(engine3_text, include_private=True)
     return {
         "ok": True,
         "before": before.get("ai_detection_percentage", 0),
@@ -242,8 +289,13 @@ async def upload(file: UploadFile = File(...)) -> dict:
         text = extract_text(file.filename or "upload.txt", content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _validate_size(text)
-    return {"filename": file.filename, "text": text, "report": dashboard_report(text)}
+    text = _validate_size(text)
+    return {
+        "filename": file.filename or "upload",
+        "text": text,
+        "characters": len(text),
+        "words": len(text.split()),
+    }
 
 
 @app.post("/api/analyse")
@@ -293,7 +345,7 @@ def humanize(payload: HumanizeRequest) -> dict:
             revised = engine1_text
             engine2_report = {
                 "applied": False, "engine": "engine2", "label": "Engine 2, API rewrite",
-                "reason": status.get("engines", {}).get("engine2", {}).get("message", "Engine 2 API rewrite is not configured."),
+                "reason": "Engine 2 is not available on this deployment. Contact the administrator.",
                 "fallback_used": True,
             }
         elif payload.mode in {"balanced", "deep"}:
@@ -369,7 +421,7 @@ def humanize(payload: HumanizeRequest) -> dict:
     return {
         "selected_engine": selected_engine,
         "actual_engine": actual_engine,
-        "selected_engine2_model": payload.engine2_model if selected_engine == "engine2" else None,
+        "selected_engine2_model": ({"gpt-5.6-luna": "v1", "gpt-5.6-terra": "v2"}.get(payload.engine2_model, payload.engine2_model)) if selected_engine == "engine2" else None,
         "changed": revised != original,
         "preservation_certificate": preservation,
         "original_report": original_dashboard,

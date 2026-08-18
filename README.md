@@ -175,3 +175,27 @@ HUMANIZER_BENCHMARK_DIR=/var/data/humanizer-calibration
 ```
 
 The lab is disabled by default. If it is enabled without a developer token, the UI shows a warning. On Render, use a persistent disk for the benchmark directory or the corpus may disappear on redeploy.
+
+## v2.4: robustness, private detector internals, reliable upload and Word export
+
+v2.4 adds a fifth optional probability-curvature feature family when the reference language model is enabled. The curvature values are explicitly a single-reference-model proxy, not a DetectGPT/Fast-DetectGPT implementation. The Benchmark Lab now trains with a stratified train/validation/locked-test split, constrains threshold selection by `HUMANIZER_MAX_HUMAN_FPR`, records feature importance, registers trained model versions, supports promotion/rollback, and exposes drift screening in the password-protected developer area.
+
+Detector operating mode, calibration status, model family, feature weights, model registry, probability diagnostics and reference-LM status are no longer shown in the public interface. They are available only after developer authentication. The public `/api/analyse` response also omits these private fields.
+
+The public AI map is now deliberately simple: red means one or more AI-style sentence signals fired, green means no sentence signal crossed the threshold, and grey marks protected/excluded academic structure. The separate A–I signal-colour view remains available for diagnosis.
+
+Document upload is decoupled from AI analysis. TXT, MD, DOCX and text-based PDF files are first extracted into the Source text box. This avoids an expensive detector pass causing the upload itself to fail. The user then clicks **Detect AI** when ready. Humanized text can be exported directly to a clean Word `.docx` file.
+
+Engine 2 no longer exposes provider model names in the user interface. The public refinement levels are `V1 (Light)` and `V2 (Moderate)`. Internally, V1 maps to the lower-cost configured model alias and V2 maps to the stronger configured model alias.
+
+### Required private Benchmark Lab environment
+
+```bash
+HUMANIZER_BENCHMARK_LAB_ENABLED=true
+HUMANIZER_DEVELOPER_TOKEN=<long-private-password>
+HUMANIZER_BENCHMARK_DIR=/var/data/humanizer-calibration
+HUMANIZER_CALIBRATION_MODEL=/var/data/humanizer-calibration/meta_classifier.json
+HUMANIZER_MAX_HUMAN_FPR=0.05
+```
+
+`HUMANIZER_DEVELOPER_TOKEN` is mandatory in v2.4. If it is missing, the private developer interface remains locked even when the Benchmark Lab flag is enabled.

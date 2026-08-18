@@ -77,3 +77,10 @@ For corpus calibration, train `calibration/meta_classifier.json` offline with `s
 ## v2.3 Benchmark Lab deployment
 
 The Benchmark Lab is a developer feature and remains off unless `HUMANIZER_BENCHMARK_LAB_ENABLED=true`. If you enable it on Render, set `HUMANIZER_DEVELOPER_TOKEN` to a long secret and, if the corpus must survive deploys, attach a persistent disk and point `HUMANIZER_BENCHMARK_DIR` to that disk (for example `/var/data/humanizer-calibration`). The detector itself does not require the Benchmark Lab at runtime after a trained calibration model has been saved.
+
+
+## v2.4 private developer access
+
+The public application does not expose detector operating mode, calibration status, feature weights or reference-language-model status. To enable the private Benchmark Lab and Validation Centre, set `HUMANIZER_BENCHMARK_LAB_ENABLED=true` and **also** set a strong `HUMANIZER_DEVELOPER_TOKEN`. v2.4 refuses developer access when the token is missing. Use `/var/data/humanizer-calibration` on a persistent Render disk for `HUMANIZER_BENCHMARK_DIR`, and set `HUMANIZER_CALIBRATION_MODEL=/var/data/humanizer-calibration/meta_classifier.json`. `HUMANIZER_MAX_HUMAN_FPR=0.05` is the recommended starting ceiling for human false positives during threshold selection.
+
+Engine 2 displays only V1 (Light) and V2 (Moderate) in the browser. Provider model names remain server-side.
