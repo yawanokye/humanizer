@@ -865,6 +865,42 @@ def validate_humanizer_preservation(original: str, candidate: str, *, max_word_c
     return not reasons, reasons
 
 
+
+def preservation_certificate(original: str, candidate: str) -> dict[str, Any]:
+    """Return an explicit protected-content audit for the rewrite UI.
+
+    This certificate is intentionally about *protected evidence*, not semantic
+    equivalence. It does not claim that a heuristic checker can prove meaning has
+    remained identical.
+    """
+    before = _signature(original)
+    after = _signature(candidate)
+
+    def reference_tail(value: str) -> str:
+        lines = str(value or "").splitlines()
+        for index, line in enumerate(lines):
+            if _REFERENCE_HEADING_RE.match(line.strip()):
+                return "\n".join(lines[index:]).strip()
+        return ""
+
+    checks = {
+        "numbers": before["numbers"] == after["numbers"],
+        "citations": before["citation_blocks"] == after["citation_blocks"],
+        "urls": before["urls"] == after["urls"],
+        "emails": before["emails"] == after["emails"],
+        "headings": before["headings"] == after["headings"],
+        "tables": before["table_lines"] == after["table_lines"] and before["tabular_lines"] == after["tabular_lines"],
+        "equations": before["display_equations"] == after["display_equations"] and before["equationish"] == after["equationish"],
+        "references": reference_tail(original) == reference_tail(candidate),
+        "placeholders": before["placeholders"] == after["placeholders"],
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "changed_word_ratio": round(abs(_word_count(candidate) - max(1, _word_count(original))) / max(1, _word_count(original)), 4),
+        "note": "This audit verifies protected scholarly evidence and structure. It is not a proof of semantic identity.",
+    }
+
 def split_scholarly_sections(text: str) -> list[dict[str, Any]]:
     """Split a chapter into heading-led sections without changing content order.
 
@@ -1004,6 +1040,29 @@ def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], si
     return value.strip()
 
 
+
+def _engine3_statistical_targets(detector: dict[str, Any]) -> tuple[list[str], set[str]]:
+    """Map elevated continuous fingerprint metrics to safe A-I rewrite families."""
+    components = dict((detector or {}).get("statistical_components") or {})
+    targets: list[str] = []
+    mapped: set[str] = set()
+    mapping = {
+        "perplexity_proxy": {"A"},
+        "token_probability_distribution_proxy": {"A"},
+        "burstiness": {"B"},
+        "ngram_frequency": {"D", "I"},
+        "uniform_semantic_density": {"B", "I"},
+        "repetitive_syntactic_structures": {"D", "I"},
+        "systemic_transitions": {"F"},
+        "low_vocabulary_diversity": {"A"},
+    }
+    for key, families in mapping.items():
+        score = int(components.get(key) or 0)
+        if score >= 35:
+            targets.append(f"{key} ({score}%)")
+            mapped.update(families)
+    return targets, mapped
+
 def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep") -> tuple[str, dict[str, Any]]:
     """Engine 3: identify active forensic signals and target them explicitly.
 
@@ -1015,8 +1074,11 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
     normalised_mode = str(mode or "deep").strip().lower()
     signals = list((detector or {}).get("signals") or [])
     active = [str(item.get("key")) for item in signals if int(item.get("score") or 0) > 0]
+    statistical_targets, statistical_families = _engine3_statistical_targets(detector or {})
     # E/H are diagnostic-only unless another editable category is also active.
-    editable = [key for key in active if key not in {"E", "H"}]
+    # Continuous statistical fingerprints can activate the corresponding safe
+    # rewrite family even when the coarse 0-3 forensic category did not fire.
+    editable = sorted(({key for key in active if key not in {"E", "H"}} | statistical_families))
     before_style = analyse_scholarly_style(original)
     before_score = int(before_style.get("naturalness_score", 0))
 
@@ -1026,7 +1088,8 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
             "mode": normalised_mode, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite",
             "applied": False, "preservation_passed": True, "preservation_issues": [],
             "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
-            "targeted_signals": editable, "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
+            "targeted_signals": editable, "targeted_statistical_metrics": statistical_targets,
+            "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
             "detector_independent": False,
             "reason": "No safely editable A-I signal was active." if active else "No active forensic signal was detected.",
         })
@@ -1079,6 +1142,7 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
             "applied": False, "preservation_passed": False,
             "preservation_issues": sorted(set(failures)), "score_before": before_score,
             "score_after": before_score, "naturalness_gain": 0, "targeted_signals": editable,
+            "targeted_statistical_metrics": statistical_targets,
             "diagnostic_only_signals": [k for k in active if k in {"E", "H"}], "detector_independent": False,
             "reason": "No signal-guided candidate passed the scholarly preservation checks.",
         })
@@ -1092,9 +1156,10 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
         "label": "Engine 3, Signal-Guided rewrite", "applied": best != original,
         "preservation_passed": True, "preservation_issues": [], "score_before": before_score,
         "score_after": after_score, "naturalness_gain": after_score - before_score,
-        "targeted_signals": editable, "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
+        "targeted_signals": editable, "targeted_statistical_metrics": statistical_targets,
+        "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
         "detector_independent": False, "changed_characters": changed_chars,
-        "reason": "Rewrite explicitly targeted the active A-I signal families, then passed the scholarly preservation gate.",
+        "reason": "Rewrite targeted active A-I families plus elevated continuous statistical fingerprints, then passed the scholarly preservation gate.",
     })
     return best, report
 

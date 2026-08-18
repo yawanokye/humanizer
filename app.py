@@ -5,13 +5,19 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided
+from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided, preservation_certificate
 from services.analyzer import dashboard_report
+from services.calibration import calibration_status
+from services.reference_lm import reference_lm_status
+from services.benchmark import (
+    ALLOWED_PROVENANCE, add_sample, benchmark_enabled, corpus_status, evaluate_model,
+    train_from_benchmark, validation_status, verify_developer_token,
+)
 from services.document_io import build_annotated_docx, build_docx, extract_text
 from services.model_refiner import provider_status, refine_with_model
 
@@ -22,8 +28,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.1.0",
-    description="Four-layer AI-style screening with signal-coloured diagnostics, independent Engine 1, optional API Engine 2, and preservation-gated signal-guided Engine 3.",
+    version="2.3.0",
+    description="Benchmark-calibrated, section-aware multi-layer AI-style screening with held-out model selection, Validation Centre, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -43,6 +49,20 @@ class HumanizeRequest(TextRequest):
 class ExportRequest(TextRequest):
     title: str = "Scholarly Humanized Text"
     annotated: bool = False
+
+
+class BenchmarkSampleRequest(TextRequest):
+    provenance: str
+    source_family: str = "unknown"
+    discipline: str = "unknown"
+    document_type: str = "unknown"
+    editing_level: str = "none"
+    external_scores: dict[str, float] = Field(default_factory=dict)
+    notes: str = ""
+
+
+class AdversarialAuditRequest(TextRequest):
+    mode: Literal["light", "balanced", "deep"] = "deep"
 
 
 def _validate_size(text: str) -> str:
@@ -122,6 +142,96 @@ def status() -> dict:
         "engines": engines,
         "max_input_chars": MAX_INPUT_CHARS,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "calibration": calibration_status(),
+        "reference_lm": reference_lm_status(),
+        "benchmark_lab": corpus_status(),
+    }
+
+
+@app.get("/api/calibration/status")
+def get_calibration_status() -> dict:
+    return {"calibration": calibration_status(), "reference_lm": reference_lm_status()}
+
+
+def _require_benchmark_access(token: str | None) -> None:
+    if not benchmark_enabled():
+        raise HTTPException(status_code=404, detail="Benchmark Lab is disabled. Set HUMANIZER_BENCHMARK_LAB_ENABLED=true to enable it.")
+    if not verify_developer_token(token):
+        raise HTTPException(status_code=403, detail="Invalid or missing developer token.")
+
+
+@app.get("/api/developer/benchmark/status")
+def benchmark_status_endpoint(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    return {"benchmark": corpus_status(), "calibration": calibration_status(), "validation": validation_status()}
+
+
+@app.post("/api/developer/benchmark/sample")
+def benchmark_add_sample(payload: BenchmarkSampleRequest, x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    if payload.provenance not in ALLOWED_PROVENANCE:
+        raise HTTPException(status_code=400, detail=f"Unsupported provenance. Choose one of: {', '.join(sorted(ALLOWED_PROVENANCE))}")
+    try:
+        sample = add_sample(
+            text=_validate_size(payload.text),
+            provenance=payload.provenance,
+            source_family=payload.source_family,
+            discipline=payload.discipline,
+            document_type=payload.document_type,
+            editing_level=payload.editing_level,
+            external_scores=payload.external_scores,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "sample": {k: v for k, v in sample.items() if k != "text"}, "benchmark": corpus_status()}
+
+
+@app.post("/api/developer/benchmark/train")
+def benchmark_train(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    try:
+        result = train_from_benchmark()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "calibration": calibration_status(), "validation": result["validation"], "selected_model": result["model"].get("model_type"), "candidate_metrics": result["model"].get("candidate_metrics") or {}}
+
+
+@app.post("/api/developer/benchmark/evaluate")
+def benchmark_evaluate(x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    try:
+        report = evaluate_model()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "validation": report}
+
+
+@app.post("/api/developer/benchmark/adversarial-audit")
+def adversarial_audit(payload: AdversarialAuditRequest, x_developer_token: str | None = Header(default=None)) -> dict:
+    _require_benchmark_access(x_developer_token)
+    original = _validate_size(payload.text)
+    before = dashboard_report(original)
+    engine1_text, engine1 = humanize_scholarly_text(original, mode=payload.mode)
+    engine1_after = dashboard_report(engine1_text)
+    engine3_text, engine3 = humanize_signal_guided(original, detector=before.get("ai_detector", {}), mode=payload.mode)
+    engine3_after = dashboard_report(engine3_text)
+    return {
+        "ok": True,
+        "before": before.get("ai_detection_percentage", 0),
+        "engine1": {
+            "changed": engine1_text != original,
+            "after": engine1_after.get("ai_detection_percentage", 0),
+            "preservation": preservation_certificate(original, engine1_text),
+            "report": engine1,
+        },
+        "engine3": {
+            "changed": engine3_text != original,
+            "after": engine3_after.get("ai_detection_percentage", 0),
+            "preservation": preservation_certificate(original, engine3_text),
+            "report": engine3,
+        },
+        "note": "Robustness audit only. The purpose is to measure detector stability after editing, not to promise evasion of third-party detectors.",
     }
 
 
@@ -229,18 +339,39 @@ def humanize(payload: HumanizeRequest) -> dict:
     targeted_before = sum(before_signals.get(key, 0) for key in targeted)
     targeted_after = sum(after_signals.get(key, 0) for key in targeted)
     if selected_engine == "engine3":
+        signal_map = []
+        for key in "ABCDEFGHI":
+            before_value = before_signals.get(key, 0)
+            after_value = after_signals.get(key, 0)
+            signal_map.append({
+                "key": key, "before": before_value, "after": after_value,
+                "change": after_value - before_value, "targeted": key in targeted,
+            })
+        before_stats = original_dashboard.get("statistical_fingerprint_components", {}) or {}
+        after_stats = revised_dashboard.get("statistical_fingerprint_components", {}) or {}
+        statistical_map = [
+            {"key": key, "before": int(before_stats.get(key, 0) or 0), "after": int(after_stats.get(key, 0) or 0), "change": int(after_stats.get(key, 0) or 0) - int(before_stats.get(key, 0) or 0)}
+            for key in sorted(set(before_stats) | set(after_stats))
+        ]
         engine3_report = {
             **engine3_report,
             "targeted_score_before": targeted_before,
             "targeted_score_after": targeted_after,
             "targeted_score_reduction": targeted_before - targeted_after,
+            "signal_map": signal_map,
+            "statistical_map": statistical_map,
+            "section_profile_before": original_dashboard.get("section_profile", {}),
+            "section_profile_after": revised_dashboard.get("section_profile", {}),
         }
+
+    preservation = preservation_certificate(original, revised)
 
     return {
         "selected_engine": selected_engine,
         "actual_engine": actual_engine,
         "selected_engine2_model": payload.engine2_model if selected_engine == "engine2" else None,
         "changed": revised != original,
+        "preservation_certificate": preservation,
         "original_report": original_dashboard,
         "text": revised,
         "report": revised_dashboard,

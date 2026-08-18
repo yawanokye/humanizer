@@ -32,3 +32,10 @@ services:
         value: high
       - key: PROJECTREADY_HUMANIZER_MAX_WORD_CHANGE_RATIO
         value: "0.18"
+      - key: REFERENCE_LM_ENABLED
+        value: "false"
+
+# Optional v2.3 Benchmark Lab variables to add in Render dashboard:
+# HUMANIZER_BENCHMARK_LAB_ENABLED=false
+# HUMANIZER_DEVELOPER_TOKEN=<secret>
+# HUMANIZER_BENCHMARK_DIR=/var/data/humanizer-calibration  # persistent disk recommended

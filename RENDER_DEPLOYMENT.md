@@ -65,3 +65,15 @@ Use the included `render.yaml` Blueprint. It deploys the app as a Docker-based R
 - The new statistical fingerprint is also local and adds no heavy ML-model dependency to the Render image.
 - Engine 2 alone sends rewrite text to the configured external API.
 - Static assets use the v2.1.0 cache key.
+
+## v2.2 detector calibration
+
+The default Render blueprint keeps `REFERENCE_LM_ENABLED=false` so the base service remains suitable for a small instance. The four-layer detector and Engines 1/3 need no additional ML runtime.
+
+For true reference-LM token probabilities, use a larger service, install `requirements-reference-lm.txt`, make the configured model available to the container, then set `REFERENCE_LM_ENABLED=true`. `REFERENCE_LM_LOCAL_ONLY=true` is recommended in production so a request never triggers an unexpected model download.
+
+For corpus calibration, train `calibration/meta_classifier.json` offline with `scripts/train_calibration.py` and deploy that artifact with the application, or point `HUMANIZER_CALIBRATION_MODEL` to it. Until a trained artifact is present the UI explicitly says **Fallback** rather than implying empirical calibration.
+
+## v2.3 Benchmark Lab deployment
+
+The Benchmark Lab is a developer feature and remains off unless `HUMANIZER_BENCHMARK_LAB_ENABLED=true`. If you enable it on Render, set `HUMANIZER_DEVELOPER_TOKEN` to a long secret and, if the corpus must survive deploys, attach a persistent disk and point `HUMANIZER_BENCHMARK_DIR` to that disk (for example `/var/data/humanizer-calibration`). The detector itself does not require the Benchmark Lab at runtime after a trained calibration model has been saved.

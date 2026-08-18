@@ -21,12 +21,12 @@ The existing humanizer still uses its internal Naturalness metric to choose the 
 - Engine 3, Signal-Guided rewrite, local preservation-gated editing that reads the active A–I detector profile and directly targets safely editable signals.
 - Light, balanced and deep modes.
 - Clean DOCX, annotated DOCX and coloured HTML export.
-- Stateless processing. The app does not require a database or persistent disk.
+- Core analysis/rewrite processing is stateless. The optional v2.3 Benchmark Lab stores a JSONL calibration corpus and should use a persistent disk in production.
 - Render health check, dynamic port binding, bounded uploads and production security headers.
 
 ## Important interpretation
 
-The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Its percentage is an AI-style signal index, not a calibrated probability, not the percentage of words written by AI, and not proof of authorship. Version 1.8 retains the nine-signal forensic core but replaces authorship-style verdicts with descriptive bands: Minimal, Low, Moderate, Elevated and Strong AI-style signal. The dashboard also warns that commercial detectors can disagree substantially on the same scholarly passage because their models, thresholds and training data differ. Academic prose is calibrated so technical terms such as “robust”, ordinary statistical “between X and Y” phrasing, citation semicolons, normal lists and neutral scholarly register do not become strong evidence by themselves.
+The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, rhythmically uniform and rhetorically scaffolded patterns. Without a trained benchmark model, its percentage is an explainable AI-style signal index. With a provenance-known calibration corpus, v2.3 can replace that fallback with a held-out-selected learned probability. Neither mode estimates the percentage of words written by AI, and neither proves authorship. The dashboard uses descriptive bands: Minimal, Low, Moderate, Elevated and Strong AI-style signal, and it abstains when evidence is ambiguous or internally inconsistent. Commercial detectors can disagree substantially on the same scholarly passage because their models, thresholds and training data differ. Academic sections are profiled separately so technical Methods/Results prose is not assumed to behave like Discussion or reflective prose.
 
 ## Rewrite engines
 
@@ -140,3 +140,38 @@ If a browser shows `Cannot read properties of null (reading 'checked')`, it is l
 - The coloured HTML export now uses the A–I category colours rather than only generic red/orange/yellow risk bands.
 - Added a **Statistical fingerprint** tab so users can inspect the continuous metrics behind the statistical layer.
 - Source-line-aware segmentation prevents title blocks, author affiliations, form rows and table lines from being misread as giant prose sentences.
+
+## v2.2 calibration and probability layer
+
+v2.2 separates **measurement** from **rewriting** more strictly. The detector still exposes the forensic A-I layer, the continuous statistical fingerprint, the paragraph distribution and document regularity. It now also exposes a calibration feature vector and can use a labelled logistic meta-classifier when you supply a real benchmark corpus.
+
+The application does **not** claim to be calibrated merely because it has a score. With no `calibration/meta_classifier.json` artifact, the UI displays **Transparent fallback** and uses the existing four-layer ensemble. To train the meta-classifier, prepare a provenance-verified JSONL corpus and run `python scripts/train_calibration.py calibration/benchmark.jsonl`. The trainer rejects tiny corpora and records training diagnostics, but those diagnostics are not a substitute for held-out validation.
+
+An optional true reference-language-model layer can calculate token perplexity, mean/variance/percentiles of surprisal, low-surprisal share and the longest predictable-token run. It is disabled by default because `torch` and `transformers` are too heavy for many small Render deployments. Install `requirements-reference-lm.txt`, cache/provide the selected causal language model, and set `REFERENCE_LM_ENABLED=true` to activate it. Raw perplexity is not converted directly into an authorship verdict; it becomes a calibrator feature when a labelled model is available.
+
+The dashboard now includes an **abstention zone**. Scores between 40% and 60%, or cases where the detector layers disagree sharply, are marked **Indeterminate** rather than being forced into a human/AI conclusion.
+
+Engine 3 now consumes both the active A-I categories and elevated continuous statistical fingerprints. For example, high n-gram repetition can activate D/I cleanup, high transition concentration can activate F cleanup, and low burstiness can activate B cleanup. Engine 3 still cannot alter protected evidence to achieve a lower detector score.
+
+Every humanization response also includes a protected-content certificate covering numbers, citations, URLs, emails, headings, tables, equations, references and placeholders.
+
+## v2.3: Benchmark Lab, section-aware calibration and Validation Centre
+
+v2.3 moves calibration from a single fixed logistic option to a developer benchmark workflow. When `HUMANIZER_BENCHMARK_LAB_ENABLED=true`, the developer-only Benchmark Lab can store provenance-known samples with source/model family, discipline, document type, editing level, and optional third-party detector scores. Third-party scores are metadata only and are never treated as ground truth.
+
+Once the corpus contains at least 40 samples with at least 20 human and 20 AI/AI-edited samples, the trainer compares three lightweight meta-classifiers on a stratified held-out split: logistic regression, Gaussian naive Bayes, and nearest centroid. Model selection prioritises ROC-AUC, F1, lower false-positive rate, and accuracy. The selected family is refit on the complete benchmark, while the Validation Centre continues to display the held-out metrics that justified selection.
+
+The detector also tags prose by scholarly section: abstract, introduction/literature, methods, results, discussion, conclusion/limitations, and other prose. These section means are included in the calibration feature vector instead of assuming that Methods and Discussion should have identical stylistic distributions.
+
+Engine 3 now returns a visible before/after A–I map and continuous statistical map. Engine 1 remains detector-independent. The developer robustness audit can compare the detector score before editing and after Engine 1/Engine 3 while also verifying protected-content preservation.
+
+### Enable the Benchmark Lab
+
+```bash
+HUMANIZER_BENCHMARK_LAB_ENABLED=true
+HUMANIZER_DEVELOPER_TOKEN=use-a-long-random-secret
+# Recommended on Render with a persistent disk:
+HUMANIZER_BENCHMARK_DIR=/var/data/humanizer-calibration
+```
+
+The lab is disabled by default. If it is enabled without a developer token, the UI shows a warning. On Render, use a persistent disk for the benchmark directory or the corpus may disappear on redeploy.
