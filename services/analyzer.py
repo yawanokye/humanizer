@@ -98,6 +98,8 @@ class SegmentDiagnostic:
     band: str
     reasons: list[str]
     protected: bool = False
+    signal_keys: list[str] | None = None
+    primary_signal: str | None = None
 
 
 def _word_count(text: str) -> int:
@@ -146,32 +148,72 @@ def _cv(values: list[float]) -> float:
 
 
 def _iter_sentences_with_offsets(text: str) -> list[tuple[int, int, int, int, str]]:
-    """Return paragraph/sentence positions without losing exact source offsets."""
+    """Return exact sentence offsets while respecting extracted document lines.
+
+    DOCX/PDF extraction commonly emits one original paragraph per line. The old
+    blank-line-only parser could treat a title, author block and abstract as one
+    giant sentence. v2.1 treats each non-empty source line as a paragraph unit,
+    then splits sentences inside that line without losing offsets.
+    """
+    raw = str(text or "")
     items: list[tuple[int, int, int, int, str]] = []
     paragraph_index = 0
-    for match in re.finditer(r"\S(?:.*?\S)?(?=\n\s*\n|\Z)", text, re.S):
-        paragraph = match.group(0)
-        paragraph_start = match.start()
-        sentence_cursor = 0
+    cursor = 0
+    for line in raw.splitlines(keepends=True):
+        core = line.rstrip("\r\n")
+        if not core.strip():
+            cursor += len(line)
+            continue
+        leading = len(core) - len(core.lstrip())
+        paragraph = core.strip()
+        local_cursor = 0
         sentence_index = 0
         pieces = SENTENCE_RE.split(paragraph)
         for piece in pieces:
             if not piece.strip():
-                sentence_cursor += len(piece)
+                local_cursor += len(piece)
                 continue
-            local = paragraph.find(piece, sentence_cursor)
+            local = paragraph.find(piece, local_cursor)
             if local < 0:
-                local = sentence_cursor
-            start = paragraph_start + local
+                local = local_cursor
+            start = cursor + leading + local
             end = start + len(piece)
             items.append((paragraph_index, sentence_index, start, end, piece))
-            sentence_cursor = local + len(piece)
+            local_cursor = local + len(piece)
             sentence_index += 1
         paragraph_index += 1
-    if not items and text.strip():
-        stripped_start = len(text) - len(text.lstrip())
-        items.append((0, 0, stripped_start, len(text.rstrip()), text.strip()))
+        cursor += len(line)
+    if not items and raw.strip():
+        stripped_start = len(raw) - len(raw.lstrip())
+        items.append((0, 0, stripped_start, len(raw.rstrip()), raw.strip()))
     return items
+
+
+def _is_structural_segment(clean: str) -> bool:
+    value = str(clean or "").strip()
+    if not value:
+        return True
+    if "\t" in value or " | " in value:
+        return True
+    if PROTECTED_LINE_RE.match(value) or value.startswith("|") or "$$" in value or "```" in value:
+        return True
+    if re.match(r"^(?:Table|Figure|Fig\.?|Appendix)\s+\d*[A-Za-z]?[.:]?\b", value, re.I):
+        return True
+    if re.match(r"^\d+(?:\.\d+){0,3}\s+[A-Z]", value):
+        return True
+    if re.match(r"^(?:Abstract|Executive Summary|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography)$", value, re.I):
+        return True
+    if re.match(r"^(?:FULL LEGAL NAME|LOCATION|EMAIL ADDRESS|Team member\s+\d+)\b", value, re.I):
+        return True
+    if re.search(r"\bEmail\s*:\s*\S+@\S+", value, re.I) or re.fullmatch(r"\S+@\S+", value):
+        return True
+    if len(WORD_RE.findall(value)) <= 20 and not re.search(r"[.!?][\]\)\"'’”]*$", value):
+        if re.search(r"\b(?:University|Department|School|College|Institute|Faculty|Centre|Center)\b", value, re.I):
+            return True
+        # Most title/headline lines in scholarly documents have no sentence stop.
+        if not re.search(r"\b(?:is|are|was|were|has|have|can|may|will|should)\b", value, re.I):
+            return True
+    return False
 
 
 def _ngram_repetition_score(words: list[str]) -> tuple[int, list[str]]:
@@ -444,6 +486,122 @@ def _build_category_concerns(text: str, segments: list[dict[str, Any]], global_r
     return categories
 
 
+SIGNAL_LABELS = {
+    "A": "Perplexity / predictability",
+    "B": "Burstiness / rhythm",
+    "C": "Hedge density",
+    "D": "Structural tells",
+    "E": "Specificity",
+    "F": "Transitions",
+    "G": "Punctuation",
+    "H": "Voice / register",
+    "I": "Rhetorical scaffolding",
+}
+
+
+def _infer_segment_signal_keys(sentence: str, reasons: list[str]) -> list[str]:
+    """Map sentence evidence to the A-I forensic families for coloured diagnostics."""
+    joined = " | ".join(reasons).lower()
+    keys: list[str] = []
+    mapping = (
+        ("A", ("predictable", "vocabulary", "generic evaluative", "inflated stock", "generic metadiscourse")),
+        ("B", ("rhythm", "sentence-length", "very long sentence", "very short sentence", "cadence")),
+        ("C", ("hedge", "softening", "uncertainty")),
+        ("D", ("structural", "three-part", "paragraph opening", "sentence opening", "balanced template")),
+        ("E", ("specificity", "obscured actor", "unsupported", "broad evidence claim")),
+        ("F", ("transition", "connector", "formulaic summary", "synthesis frame")),
+        ("G", ("em-dash", "semicolon", "punctuation", "colon pattern", "clause density")),
+        ("H", ("voice", "register", "professional voice")),
+        ("I", ("rhetorical", "scaffolding", "announcement", "pivot", "repeated frame", "parallel question", "thesis/landing")),
+    )
+    for key, markers in mapping:
+        if any(marker in joined for marker in markers):
+            keys.append(key)
+    # Pattern-level fallback where the reason text is intentionally concise.
+    if not keys:
+        lower = sentence.lower()
+        if re.search(r"\b(?:furthermore|moreover|additionally|therefore|taken together)\b", lower):
+            keys.append("F")
+        if "—" in sentence or ";" in sentence:
+            keys.append("G")
+        if re.search(r"\bnot only\b.+\bbut also\b", lower):
+            keys.extend(["D", "I"])
+    return list(dict.fromkeys(keys))
+
+
+def build_signal_coloured_html(text: str, segments: list[dict[str, Any]] | None = None) -> str:
+    """Colour sentence spans by their diagnosed A-I signal families.
+
+    The sentence background stays neutral. Category colours appear as an underline/left
+    accent plus compact badges, so multi-signal sentences remain readable.
+    """
+    raw = str(text or "")
+    diagnostics = segments or analyse_segments(raw)
+    pieces: list[str] = []
+    cursor = 0
+    for segment in diagnostics:
+        start, end = int(segment["start"]), int(segment["end"])
+        if start > cursor:
+            pieces.append(html.escape(raw[cursor:start]).replace("\n", "<br>"))
+        escaped = html.escape(raw[start:end]).replace("\n", "<br>")
+        keys = list(segment.get("signal_keys") or [])
+        if segment.get("protected"):
+            pieces.append(f'<span class="signal-text protected-text">{escaped}</span>')
+        elif keys:
+            primary = str(segment.get("primary_signal") or keys[0])
+            badges = "".join(
+                f'<span class="signal-badge signal-{html.escape(key)}" title="{html.escape(SIGNAL_LABELS.get(key, key))}">{html.escape(key)}</span>'
+                for key in keys
+            )
+            reasons = html.escape(" • ".join(segment.get("reasons") or []), quote=True)
+            pieces.append(
+                f'<span class="signal-text signal-text-{html.escape(primary)}" data-reasons="{reasons}" '
+                f'data-signals="{html.escape(",".join(keys))}" tabindex="0">{escaped}{badges}</span>'
+            )
+        else:
+            pieces.append(escaped)
+        cursor = end
+    if cursor < len(raw):
+        pieces.append(html.escape(raw[cursor:]).replace("\n", "<br>"))
+    return "".join(pieces)
+
+
+def _statistical_fingerprint(categories: list[dict[str, Any]]) -> tuple[int, dict[str, int]]:
+    """Build the v2.1 statistical fingerprint from continuous local metrics.
+
+    This remains a black-box-free statistical layer. The perplexity and token-probability
+    fields are explicitly proxies unless a reference LM is configured in a future build.
+    """
+    values: dict[str, int] = {}
+    for group in categories:
+        for metric in group.get("metrics", []):
+            values[str(metric.get("key"))] = int(metric.get("percentage") or 0)
+    weights = {
+        "perplexity_proxy": 0.18,
+        "burstiness": 0.20,
+        "token_probability_distribution_proxy": 0.17,
+        "ngram_frequency": 0.15,
+        "uniform_semantic_density": 0.10,
+        "repetitive_syntactic_structures": 0.10,
+        "systemic_transitions": 0.05,
+        "low_vocabulary_diversity": 0.05,
+    }
+    score = round(sum(values.get(key, 0) * weight for key, weight in weights.items()))
+    return max(0, min(100, score)), {key: values.get(key, 0) for key in weights}
+
+
+def _signal_level_from_percentage(score: int) -> str:
+    if score < 20:
+        return "Minimal AI-style signal"
+    if score < 40:
+        return "Low AI-style signal"
+    if score < 60:
+        return "Moderate AI-style signal"
+    if score < 80:
+        return "Elevated AI-style signal"
+    return "Strong AI-style signal"
+
+
 def analyse_segments(text: str) -> list[dict[str, Any]]:
     raw = str(text or "")
     positions = _iter_sentences_with_offsets(raw)
@@ -463,7 +621,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
     results: list[SegmentDiagnostic] = []
     for global_index, (paragraph_index, sentence_index, start, end, sentence) in enumerate(positions):
         clean = sentence.strip()
-        protected = bool(PROTECTED_LINE_RE.match(clean)) or clean.startswith("|") or "$$" in clean or "```" in clean
+        protected = _is_structural_segment(clean)
         reasons: list[str] = []
         risk = 0
         word_count = _word_count(clean)
@@ -480,6 +638,8 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
                 band="protected",
                 reasons=["Protected academic structure"],
                 protected=True,
+                signal_keys=[],
+                primary_signal=None,
             ))
             continue
 
@@ -550,6 +710,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
         risk = max(0, min(100, risk))
         if not reasons and risk == 0:
             reasons.append("No major formulaic-style issue detected")
+        signal_keys = _infer_segment_signal_keys(clean, reasons)
         results.append(SegmentDiagnostic(
             index=global_index,
             paragraph_index=paragraph_index,
@@ -560,6 +721,8 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             risk=risk,
             band=_band(risk),
             reasons=reasons,
+            signal_keys=signal_keys,
+            primary_signal=signal_keys[0] if signal_keys else None,
         ))
     return [asdict(item) for item in results]
 
@@ -596,8 +759,42 @@ def dashboard_report(text: str) -> dict[str, Any]:
     naturalness = max(0, min(100, int(global_report.get("naturalness_score", 0))))
     style_concern = 100 - naturalness  # legacy API field only
 
+    category_concerns = _build_category_concerns(text, segments, global_report)
+    statistical_fingerprint, statistical_components = _statistical_fingerprint(category_concerns)
     detector = ai_check_report(text, global_report=global_report, academic=True)
-    ai_signal = max(0, min(100, int(detector["ai_detection_percentage"])))
+
+    # v2.1 four-layer ensemble. The humanizer does not participate in this score.
+    forensic_pct = int(detector.get("category_signal_percentage", 0))
+    paragraph_pct = int(detector.get("segment_signal_percentage", 0))
+    regularity_pct = int(detector.get("consistency_signal_percentage", 0))
+    base_ensemble = round(
+        forensic_pct * 0.25
+        + statistical_fingerprint * 0.35
+        + paragraph_pct * 0.30
+        + regularity_pct * 0.10
+    )
+    corroborating_layers = sum(1 for value in (forensic_pct, statistical_fingerprint, paragraph_pct, regularity_pct) if value >= 35)
+    corroboration_bonus = 8 if corroborating_layers >= 3 else 4 if corroborating_layers >= 2 else 0
+    ai_signal = max(0, min(100, base_ensemble + corroboration_bonus))
+    detector["ai_detection_percentage"] = ai_signal
+    detector["verdict"] = _signal_level_from_percentage(ai_signal)
+    detector["signal_level"] = detector["verdict"]
+    detector["statistical_fingerprint_percentage"] = statistical_fingerprint
+    detector["statistical_components"] = statistical_components
+    detector["corroboration_bonus"] = corroboration_bonus
+    detector["corroborating_layers"] = corroborating_layers
+    detector["composite_weights"] = {
+        "forensic": 0.25, "statistical": 0.35, "segments": 0.30, "document_consistency": 0.10
+    }
+    detector["calibration_notes"] = [
+        "AI Signal is a composite style index, not a percentage of words written by AI.",
+        "v2.1 headline weights: 25% forensic A-I evidence, 35% continuous statistical fingerprint, 30% paragraph profile and 10% document regularity.",
+        "When three or more independent layers are simultaneously elevated, an 8-point corroboration bonus is applied; two elevated layers add 4 points.",
+        "Perplexity and token-probability fields are local statistical proxies in this lightweight deployment, not token log-probabilities from a reference language model.",
+        "Human-context evidence changes confidence only and does not erase AI-style evidence.",
+        "Tables, form rows, headings and table punctuation are excluded from prose-style scoring where possible.",
+        "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a style-screening indicator, not proof of authorship.",
+    ]
     human_like_style = 100 - ai_signal
     high_count = sum(1 for item in segments if item["band"] == "high")
     moderate_count = sum(1 for item in segments if item["band"] == "moderate")
@@ -621,20 +818,29 @@ def dashboard_report(text: str) -> dict[str, Any]:
         "naturalness_percentage": naturalness,
         # Backward-compatible fields for older clients. They are no longer the main dashboard.
         "style_concern_percentage": style_concern,
-        "style_concern_categories": _build_category_concerns(text, segments, global_report),
+        "style_concern_categories": category_concerns,
+        "statistical_fingerprint_percentage": statistical_fingerprint,
+        "statistical_fingerprint_components": statistical_components,
         "high_risk_segments": high_count,
         "moderate_risk_segments": moderate_count,
         "active_signal_categories": active_signal_categories,
         "elevated_signal_categories": elevated_signal_categories,
         "signal_evidence_items": evidence_items,
         "flagged_sentence_count": flagged_sentence_count,
+        "prose_segment_count": int(detector.get("segment_count", 0)),
+        "flagged_prose_segments": int(detector.get("flagged_segment_count", 0)),
+        "elevated_prose_segments": int(detector.get("elevated_segment_count", 0)),
+        "strong_prose_segments": int(detector.get("strong_segment_count", 0)),
         "segments": segments,
         "highlighted_html": build_highlighted_html(text, segments),
+        "signal_coloured_html": build_signal_coloured_html(text, segments),
+        "signal_colour_legend": SIGNAL_LABELS,
         "metrics": global_report,
         "disclaimer": (
             "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
             "AI Signal is not the percentage of words written by AI and does not prove authorship. Different detectors may disagree substantially on the same scholarly text. "
-            "Interpret the score together with the nine signal categories, evidence items and sentence map."
+            "The score combines forensic linguistic evidence, a continuous statistical fingerprint, paragraph-level distribution and document-level regularity. "
+            "Interpret it together with the nine signal categories, paragraph profile, evidence items and sentence map."
         ),
         "detector_variability_notice": detector.get("detector_variability_notice", ""),
     }

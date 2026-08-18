@@ -350,25 +350,116 @@ def _prose_sentences_from_text(text: str) -> list[str]:
 
 
 def _prose_paragraphs_from_text(text: str) -> list[str]:
+    """Extract paragraph-like prose units from DOCX/TXT/PDF text.
+
+    Many document extractors emit one paragraph per line rather than separating
+    paragraphs with blank lines. Earlier builds therefore collapsed an entire
+    manuscript section into only a handful of segments. This parser treats long
+    prose lines as independent paragraph units while still joining short wrapped
+    lines when necessary.
+    """
     paragraphs: list[str] = []
-    for block in re.split(r"\n\s*\n", text or ""):
-        lines = []
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped or "\t" in line or " | " in line:
-                continue
-            if re.match(r"^(?:Table|Figure|Fig\.?|Appendix)\s+\d*[A-Za-z]?[.:]?\b", stripped, re.I):
-                continue
-            if re.match(r"^\d+(?:\.\d+){0,3}\s+[A-Z]", stripped):
-                continue
-            if re.match(r"^(?:Abstract|Executive Summary|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography)$", stripped, re.I):
-                continue
-            if len(_words(stripped)) >= 6:
-                lines.append(stripped)
-        if lines:
-            paragraphs.append(" ".join(lines))
+    buffer: list[str] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer:
+            joined = " ".join(buffer).strip()
+            if len(_words(joined)) >= 6:
+                paragraphs.append(joined)
+            buffer = []
+
+    for line_no, line in enumerate((text or "").splitlines()):
+        stripped = re.sub(r"\s+", " ", line).strip()
+        if not stripped:
+            flush()
+            continue
+        if "\t" in line or " | " in line:
+            flush()
+            continue
+        if re.match(r"^(?:Table|Figure|Fig\.?|Appendix)\s+\d*[A-Za-z]?[.:]?\b", stripped, re.I):
+            flush()
+            continue
+        if re.match(r"^\d+(?:\.\d+){0,3}\s+[A-Z]", stripped):
+            flush()
+            continue
+        if re.match(r"^(?:Abstract|Executive Summary|Introduction|Conclusion|Recommendations?|Limitations?|References|Works Cited|Bibliography)$", stripped, re.I):
+            flush()
+            continue
+        if re.match(r"^(?:FULL LEGAL NAME|LOCATION|EMAIL ADDRESS|Team member\s+\d+)\b", stripped, re.I):
+            flush()
+            continue
+        if line_no < 15 and not re.search(r"[.!?]$", stripped) and len(_words(stripped)) <= 30:
+            flush()
+            continue
+
+        wc = len(_words(stripped))
+        # DOCX and text extraction commonly preserve each original paragraph as
+        # one long line. Keep those lines separate so mixed authorship and local
+        # style hotspots are not diluted by whole-document averaging.
+        if wc >= 18:
+            flush()
+            paragraphs.append(stripped)
+            continue
+
+        buffer.append(stripped)
+        if re.search(r"[.!?][\]\)\"'’”]*$", stripped) and sum(len(_words(x)) for x in buffer) >= 12:
+            flush()
+
+    flush()
     return paragraphs
 
+
+def _percentile(values: list[int], q: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = max(0.0, min(1.0, q)) * (len(ordered) - 1)
+    lo = int(pos)
+    hi = min(len(ordered) - 1, lo + 1)
+    frac = pos - lo
+    return round(ordered[lo] * (1 - frac) + ordered[hi] * frac)
+
+
+def _segment_style_risk(paragraph: str, academic: bool = True) -> tuple[int, list[str]]:
+    """Independent paragraph-level style screen.
+
+    This deliberately does not use the humanizer's naturalness score. It blends
+    sentence evidence with local rhythm/structure so a long manuscript cannot
+    hide a highly formulaic paragraph inside an otherwise concrete methods section.
+    """
+    sentences = [s for s in _sentences(paragraph) if _is_prose_sentence(s)]
+    if not sentences:
+        sentences = _sentences(paragraph)
+    local = [sentence_ai_signal(s, academic=academic)[0] for s in sentences]
+    reasons: list[str] = []
+    peak = max(local, default=0)
+    mean = sum(local) / max(1, len(local))
+    structural = 0
+    lengths = _sentence_lengths(sentences)
+    if len(lengths) >= 3:
+        local_cv = _cv(lengths)
+        if local_cv < 0.22:
+            structural += 14
+            reasons.append(f"Local sentence rhythm is very even (CV {local_cv:.2f}).")
+        elif local_cv < 0.32:
+            structural += 7
+            reasons.append(f"Local sentence rhythm is fairly even (CV {local_cv:.2f}).")
+        if min(lengths, default=0) >= 12 and max(lengths, default=0) <= 38 and len(lengths) >= 4:
+            structural += 6
+            reasons.append("Paragraph maintains a narrow polished sentence-length band.")
+    starters = [" ".join(_words(s)[:2]) for s in sentences if _words(s)]
+    if len(starters) >= 3 and len(set(starters)) <= max(1, len(starters) // 2):
+        structural += 8
+        reasons.append("Sentence openings repeat within the paragraph.")
+    formulaic_openers = sum(bool(re.match(r"^(?:This study|This paper|The study|The paper|The results|The findings|The analysis|This result|This pattern|The distinction)\b", s, re.I)) for s in sentences)
+    if formulaic_openers >= 2:
+        structural += 8
+        reasons.append("Several sentences use conventional report-style openings.")
+    local_risk = round(peak * 0.45 + mean * 0.35 + min(35, structural) * 0.20)
+    return min(100, local_risk), reasons
 
 def _humanness_counter_evidence(text: str, prose_sentences: list[str], academic: bool) -> tuple[int, list[dict[str, str]]]:
     """Score counter-evidence before interpreting AI-style cues.
@@ -609,47 +700,102 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
         weighted_parts.append(weighted)
     weighted_raw_total = round(sum(weighted_parts), 2)
     scaled_score = weighted_raw_total * (27 / WEIGHTED_MAX) if WEIGHTED_MAX else 0.0
-    net_score = max(0.0, min(27.0, scaled_score - j_score))
-    displayed_net_score = round(net_score, 1)
-    ai_pct = max(0, min(100, round(displayed_net_score / 27 * 100)))
+    category_pct = max(0, min(100, round((scaled_score / 27) * 100)))
+
+    # Independent local profile. Humanness counter-evidence does NOT erase style
+    # evidence. It is used to qualify confidence only, because a technically exact
+    # manuscript can still contain AI-assisted prose around genuine results.
+    sentence_risks = [sentence_ai_signal(sentence, academic=academic)[0] for sentence in prose_sentences]
+    segment_profile: list[dict[str, Any]] = []
+    segment_scores: list[int] = []
+    for index, paragraph in enumerate(paragraphs[:120]):
+        local_pct, local_reasons = _segment_style_risk(paragraph, academic=academic)
+        segment_scores.append(local_pct)
+        segment_profile.append({
+            "segment": index + 1,
+            "ai_signal": local_pct,
+            "label": _verdict_from_index(local_pct),
+            "excerpt": _quote(paragraph, 120),
+            "reasons": local_reasons,
+        })
+
+    segment_mean = round(sum(segment_scores) / max(1, len(segment_scores))) if segment_scores else 0
+    segment_p75 = _percentile(segment_scores, 0.75)
+    segment_p90 = _percentile(segment_scores, 0.90)
+    segment_pct = max(0, min(100, round(segment_mean * 0.30 + segment_p75 * 0.30 + segment_p90 * 0.40)))
+
+    objective_keys = {"A", "B", "C", "F", "G"}
+    objective_weighted = sum(float(signal["weighted_score"]) for signal in signals if signal["key"] in objective_keys)
+    objective_max = sum(3 * CATEGORY_WEIGHTS[key] for key in objective_keys)
+    lexical_pct = max(0, min(100, round((objective_weighted / objective_max) * 100))) if objective_max else 0
+
+    # Document-consistency component is intentionally modest. It captures global
+    # regularity without punishing normal academic coherence on its own.
+    consistency_points = 0.0
+    if len(lengths) >= 8:
+        if sent_cv < 0.22:
+            consistency_points += 35
+        elif sent_cv < 0.30:
+            consistency_points += 22
+        elif sent_cv < 0.38:
+            consistency_points += 10
+    if len(paragraph_lengths) >= 5:
+        if para_cv < 0.18:
+            consistency_points += 25
+        elif para_cv < 0.28:
+            consistency_points += 14
+        elif para_cv < 0.40:
+            consistency_points += 7
+    d_score = next((int(x["score"]) for x in signals if x["key"] == "D"), 0)
+    i_score = next((int(x["score"]) for x in signals if x["key"] == "I"), 0)
+    consistency_points += min(30, d_score * 6 + i_score * 4)
+    consistency_pct = max(0, min(100, round(consistency_points)))
+
+    # Composite detector is intentionally separate from the humanizer. It combines
+    # global category evidence with local segment distribution, countable lexical/
+    # rhythm signals and document-level regularity. This avoids a single coarse
+    # 0-3 category grid dominating every manuscript.
+    ai_pct = max(0, min(100, round(
+        category_pct * 0.30
+        + segment_pct * 0.40
+        + lexical_pct * 0.20
+        + consistency_pct * 0.10
+    )))
     verdict = _verdict_from_index(ai_pct)
 
+    displayed_forensic_score = round(scaled_score, 1)
     conditional_share = sum(signal["weighted_score"] for signal in signals if signal["key"] in {"C", "H", "I"}) / max(0.001, weighted_raw_total)
-    confidence = _confidence(prose_text, round(net_score), [int(s["score"]) for s in signals])
+    confidence = _confidence(prose_text, round(scaled_score), [int(s["score"]) for s in signals])
     reliability_flag = None
     if conditional_share > 0.60 and weighted_raw_total > 0:
-        reliability_flag = ">60% of weighted score comes from register-dependent C/H/I signals; confidence capped at Medium."
+        reliability_flag = ">60% of weighted category evidence comes from register-dependent C/H/I signals; confidence capped at Medium."
         if confidence == "High":
             confidence = "Medium"
+    if j_score >= 2 and confidence == "High":
+        confidence = "Medium"
+        reliability_flag = (reliability_flag + " " if reliability_flag else "") + "Strong humanness/context evidence reduces confidence in an authorship interpretation."
 
-    paragraph_ai_pct, paragraph_risks = _paragraph_ai_profile(paragraphs, academic=academic)
-    sentence_risks = [sentence_ai_signal(sentence, academic=academic)[0] for sentence in prose_sentences]
     flagged_sentence_count = sum(1 for risk in sentence_risks if risk >= 25)
     moderate_sentence_count = sum(1 for risk in sentence_risks if risk >= 45)
     high_sentence_count = sum(1 for risk in sentence_risks if risk >= 70)
-
-    # Paragraph/section profiling surfaces mixed-text hotspots without contaminating
-    # the document score with headings and tables.
-    segment_profile: list[dict[str, Any]] = []
-    if len(paragraphs) >= 3:
-        for index, paragraph in enumerate(paragraphs[:80]):
-            local_risks = [sentence_ai_signal(s, academic=academic)[0] for s in _sentences(paragraph) if _is_prose_sentence(s)]
-            peak = max(local_risks, default=0)
-            mean = sum(local_risks) / max(1, len(local_risks))
-            local_pct = min(100, round(peak * 0.65 + mean * 0.35))
-            segment_profile.append({"segment": index + 1, "ai_signal": local_pct, "label": _verdict_from_index(local_pct), "excerpt": _quote(paragraph, 120)})
+    flagged_segment_count = sum(1 for risk in segment_scores if risk >= 20)
+    elevated_segment_count = sum(1 for risk in segment_scores if risk >= 40)
+    strong_segment_count = sum(1 for risk in segment_scores if risk >= 60)
 
     ranked = sorted(signals, key=lambda x: (x["weighted_score"], len(x["evidence"])), reverse=True)
     strongest = [s for s in ranked if s["score"] > 0][:3]
     if strongest:
-        gave_away = "The strongest remaining signals were " + ", ".join(f"{s['name']} ({s['score']}/3; weighted {s['weighted_score']:.2f})" for s in strongest) + "."
+        gave_away = "The strongest category signals were " + ", ".join(f"{s['name']} ({s['score']}/3; weighted {s['weighted_score']:.2f})" for s in strongest) + "."
+    elif segment_p90 >= 20:
+        gave_away = f"No global category was strong, but the upper 10% of prose segments reached {segment_p90}% local AI-style signal."
     else:
-        gave_away = "No category produced a meaningful AI-style signal."
+        gave_away = "No category produced a strong AI-style signal; the headline reflects the combined global and local profile."
 
     calibration_notes = [
-        "AI Signal is derived directly from the weighted forensic net score, so the headline percentage and category statistics reconcile.",
-        "The nine visible categories are weighted by reliability; rhetorical and register-based signals carry less weight in scholarly prose.",
-        "Humanness counter-evidence is scored separately and subtracted before the final 0–27 net score.",
+        "AI Signal is a composite style index, not a percentage of words written by AI.",
+        "Headline weights: 30% weighted A–I categories, 40% paragraph/section distribution, 20% countable lexical/rhythm signals, 10% document-level regularity.",
+        "Humanness counter-evidence is reported separately and adjusts confidence; it no longer subtracts from AI-style evidence.",
+        "Long documents are segmented by paragraph-like prose units even when extraction places each paragraph on a separate line.",
         "Tables, form rows, headings and table punctuation are excluded from prose-style scoring.",
         "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a style-screening indicator, not proof of authorship.",
     ]
@@ -661,15 +807,15 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     return {
         "verdict": verdict,
         "confidence": confidence,
-        "overall_score": displayed_net_score,
-        "net_score_exact": round(net_score, 3),
+        "overall_score": displayed_forensic_score,
+        "net_score_exact": round(scaled_score, 3),
         "max_score": 27,
         "raw_category_score": raw_total,
         "weighted_raw_score": weighted_raw_total,
         "scaled_score_before_humanness": round(scaled_score, 2),
         "humanness_counter_score": j_score,
         "humanness_counter_evidence": j_evidence,
-        "forensic_verdict": _verdict(round(net_score)),
+        "forensic_verdict": _verdict(round(scaled_score)),
         "ai_detection_percentage": ai_pct,
         "signal_level": verdict,
         "signals": signals,
@@ -677,18 +823,29 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
         "calibration_notes": calibration_notes,
         "word_count": wc,
         "sentence_lengths": lengths,
-        "category_signal_percentage": ai_pct,
-        "evidence_signal_percentage": ai_pct,
+        "category_signal_percentage": category_pct,
+        "segment_signal_percentage": segment_pct,
+        "lexical_signal_percentage": lexical_pct,
+        "consistency_signal_percentage": consistency_pct,
+        "composite_weights": {"categories": 0.30, "segments": 0.40, "lexical_rhythm": 0.20, "document_consistency": 0.10},
         "sentence_signal_percentage": round(sum(sentence_risks) / max(1, len(sentence_risks))) if sentence_risks else 0,
         "flagged_sentence_count": flagged_sentence_count,
         "moderate_sentence_count": moderate_sentence_count,
         "high_sentence_count": high_sentence_count,
-        "paragraph_ai_signal_percentage": paragraph_ai_pct,
-        "paragraph_signal_profile": paragraph_risks,
+        "paragraph_ai_signal_percentage": segment_pct,
+        "paragraph_signal_profile": segment_scores,
         "segment_profile": segment_profile,
+        "segment_count": len(segment_scores),
+        "flagged_segment_count": flagged_segment_count,
+        "elevated_segment_count": elevated_segment_count,
+        "strong_segment_count": strong_segment_count,
+        "segment_mean": segment_mean,
+        "segment_p75": segment_p75,
+        "segment_p90": segment_p90,
         "reliability_flag": reliability_flag,
         "detector_variability_notice": (
             "AI-writing detectors can disagree substantially, especially on formal academic prose. "
-            "Use this score as a style-screening indicator, not proof of authorship."
+            "This score combines global and paragraph-level style evidence and should not be treated as proof of authorship."
         ),
     }
+
