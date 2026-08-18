@@ -160,7 +160,7 @@ _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _TABULAR_LINE_RE = re.compile(r"(?m)^[^\n]*(?:\t|\s\|\s)[^\n]*$")
 _FORM_LINE_RE = re.compile(r"^(?:FULL LEGAL NAME|LOCATION(?: \(COUNTRY\))?|EMAIL ADDRESS|MARK X|Team member\s+\d+|Statement of integrity|Use the box below|Note:|N/A\b)", re.I)
 _FIGURE_TABLE_LINE_RE = re.compile(r"^(?:Table|Figure)\s+\d+[A-Za-z]?[.:]?\s", re.I)
-_INLINE_EQUATION_RE = re.compile(r"\b[A-Za-zπΣΔ][A-Za-z0-9_πΣΔ]*\s*=\s*[^.;\n]{1,100}")
+_INLINE_EQUATION_RE = re.compile(r"\b(?:pi|tau|alpha|beta|delta|sigma|[A-Za-zπΣΔ][A-Za-z0-9_πΣΔ]*)\s*=\s*(?:[-+]?\d+(?:\.\d+)?|[A-Za-zπΣΔ][A-Za-z0-9_πΣΔ]*(?:\s+[A-Za-zπΣΔ][A-Za-z0-9_πΣΔ]*){0,5})", re.I)
 _PARENTHETICAL_EVIDENCE_RE = re.compile(r"\([^()\n]{0,260}\d[^()\n]{0,260}\)")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,10}(?:_[A-Z0-9]+)?\b")
 _PROPER_MULTIWORD_RE = re.compile(r"\b[A-Z][a-z]+(?:[-'][A-Za-z]+)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z]+)?)+\b")
@@ -343,8 +343,11 @@ def analyse_scholarly_style(text: str) -> dict[str, Any]:
         score -= min(7, round((float(variation_profile["paragraph_length_cv_target"]) - paragraph_length_cv) * 15))
     if short_sentence_ratio < float(variation_profile["short_sentence_ratio_target"]):
         score -= 4
-    if long_sentence_ratio < float(variation_profile["long_sentence_ratio_target"]):
-        score -= 4
+    # Avoid a cliff where splitting one overloaded sentence suddenly makes the
+    # text four points "less natural". Long sentences are useful for variation,
+    # but a scholarly rewrite should not be forced to preserve an arbitrary quota.
+    if long_sentence_ratio < 0.07 and len(sentence_lengths) >= 8:
+        score -= 2
 
     return {
         "score": max(0, min(100, score)),
@@ -408,6 +411,10 @@ def _is_protected_line(line: str) -> bool:
         return True
     if len(value.split()) <= 14 and value.isupper():
         return True
+    if len(value.split()) <= 14 and not re.search(r"[.!?]$", value) and (
+        value.istitle() or re.search(r"\b(?:University|Department|School|College|Institute|Faculty|Centre|Center)\b", value, re.I)
+    ):
+        return True
     return False
 
 
@@ -423,11 +430,14 @@ def _is_protected_block(block: str) -> bool:
 
 
 def _mask_protected_spans(text: str) -> tuple[str, dict[str, str]]:
-    """Shield evidence-bearing spans while local cadence edits run.
+    """Shield evidence-bearing spans in one pass.
 
-    This is intentionally stricter than the final preservation validator. It means
-    Engine 1 may change sentence shape around a citation, statistic, equation or
-    named technical identifier, but the protected span itself is restored exactly.
+    Earlier builds repeatedly applied regexes to already-masked text. A later
+    pattern could then match inside an earlier placeholder, which corrupted
+    expressions such as ``W = 0.032`` and caused the whole Engine 1 candidate to
+    fail preservation. This implementation discovers spans on the untouched
+    source first, resolves overlaps by priority, then replaces them from right to
+    left.
     """
     value = str(text or "")
     protected: dict[str, str] = {}
@@ -441,13 +451,22 @@ def _mask_protected_spans(text: str) -> tuple[str, dict[str, str]]:
         _ACRONYM_RE,
         _NUMBER_RE,
     )
+    occupied = bytearray(len(value))
+    spans: list[tuple[int, int, str]] = []
     for pattern in patterns:
-        def repl(match: re.Match[str]) -> str:
-            token = chr(0xE000 + len(protected))
-            protected[token] = match.group(0)
-            return token
-        value = pattern.sub(repl, value)
-    return value, protected
+        for match in pattern.finditer(value):
+            start, end = match.span()
+            if start >= end or any(occupied[start:end]):
+                continue
+            occupied[start:end] = b"\x01" * (end - start)
+            spans.append((start, end, match.group(0)))
+
+    revised = value
+    for index, (start, end, original) in enumerate(sorted(spans, key=lambda item: item[0], reverse=True)):
+        token = chr(0xE000 + index)
+        protected[token] = original
+        revised = revised[:start] + token + revised[end:]
+    return revised, protected
 
 
 def _restore_protected_spans(text: str, protected: dict[str, str]) -> str:
@@ -574,12 +593,11 @@ def _split_long_compound_sentences(paragraph: str) -> str:
         if _word_count(left) < 10 or _word_count(right) < 9:
             revised.append(sentence)
             continue
-        if right[:1].islower():
-            right = right[:1].upper() + right[1:]
-        # Preserve contrast when the original used 'but'; plain coordination can
-        # stand as a separate sentence without a mechanical connector.
         if conjunction == "but":
-            right = "But " + right
+            # Keep the original clause subject casing after the conjunction.
+            right = "But " + (right[:1].lower() + right[1:] if right[:1].isupper() and not right[:2].isupper() else right)
+        elif right[:1].islower():
+            right = right[:1].upper() + right[1:]
         revised.extend([left.rstrip(".!?") + ".", right])
     return " ".join(revised)
 
@@ -613,9 +631,9 @@ def _split_long_contrast_sentences(paragraph: str) -> str:
         if not explicit_subject.match(right):
             revised.append(sentence)
             continue
-        if right[:1].islower():
-            right = right[:1].upper() + right[1:]
         bridge = "Yet " if match.group(1).lower() == "yet" else "Even so, "
+        if right[:1].isupper() and not right[:2].isupper():
+            right = right[:1].lower() + right[1:]
         revised.extend([left.rstrip(".!?") + ".", bridge + right])
     return " ".join(revised)
 
@@ -640,6 +658,88 @@ def _split_long_colon_clauses(paragraph: str) -> str:
     return " ".join(revised)
 
 
+def _reduce_not_only_but_also(paragraph: str) -> str:
+    """Reduce only complete ``not only ... but also`` frames.
+
+    Leaving an unmatched ``but`` behind is worse than the original prose, so the
+    local engine edits the construction only when both halves occur in the same
+    sentence.
+    """
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    out: list[str] = []
+    for sentence in sentences:
+        if re.search(r"\bnot only\b", sentence, re.I) and re.search(r"\bbut also\b", sentence, re.I):
+            sentence = re.sub(r"\bnot only\s+", "", sentence, count=1, flags=re.I)
+            sentence = re.sub(r"\bbut also\s+", "and ", sentence, count=1, flags=re.I)
+        out.append(sentence)
+    return " ".join(out)
+
+
+def _reduce_not_x_but_y(paragraph: str) -> str:
+    """Flatten repeated not-X/but-Y emphasis without changing the two ideas."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    out: list[str] = []
+    for sentence in sentences:
+        if re.search(r"\bnot\s+(?:only|simply|merely)\b", sentence, re.I) and re.search(r",\s*but(?:\s+also)?\s+", sentence, re.I):
+            sentence = re.sub(r"\bnot\s+(?:only|simply|merely)\s+", "", sentence, count=1, flags=re.I)
+            sentence = re.sub(r",\s*but(?:\s+also)?\s+", ", and ", sentence, count=1, flags=re.I)
+        out.append(sentence)
+    return " ".join(out)
+
+
+def _vary_repeated_demonstrative_openings(paragraph: str) -> str:
+    """Reduce repeated 'This result/pattern/study' sentence starts safely."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    if len(sentences) < 2:
+        return paragraph
+    replacements = {
+        "This result": "The result",
+        "This pattern": "The pattern",
+        "This distinction": "The distinction",
+        "This stability": "The stability",
+        "This design": "The design",
+        "This finding": "The finding",
+        "This evidence": "The evidence",
+    }
+    seen = 0
+    out: list[str] = []
+    for sentence in sentences:
+        matched = False
+        for source, target in replacements.items():
+            if sentence.startswith(source):
+                seen += 1
+                if seen >= 2:
+                    sentence = target + sentence[len(source):]
+                matched = True
+                break
+        out.append(sentence)
+    return " ".join(out)
+
+
+def _break_overloaded_academic_sentence(paragraph: str) -> str:
+    """Split selected long scholarly sentences at a safe sentence-level pivot."""
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(paragraph) if sentence.strip()]
+    out: list[str] = []
+    for sentence in sentences:
+        if _word_count(sentence) < 38:
+            out.append(sentence)
+            continue
+        match = re.search(r",\s+(while|whereas)\s+(?=(?:the|this|these|those|it|they|we)\b)", sentence, re.I)
+        if not match:
+            out.append(sentence)
+            continue
+        left = sentence[:match.start()].rstrip(" ,")
+        right = sentence[match.end():].strip()
+        if _word_count(left) < 14 or _word_count(right) < 10:
+            out.append(sentence)
+            continue
+        if right[:1].islower():
+            right = right[:1].upper() + right[1:]
+        opener = "By contrast, " if match.group(1).lower() == "whereas" else "At the same time, "
+        out.extend([left.rstrip(".!?") + ".", opener + right[:1].lower() + right[1:]])
+    return " ".join(out)
+
+
 def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced") -> str:
     """Refine one paragraph with progressively stronger, meaning-safe edits."""
     original_value = paragraph.strip()
@@ -656,9 +756,13 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
         value = _soften_repeated_study_openings(value)
         value = _split_long_semicolon_sentences(value)
         if level == "deep":
+            value = _reduce_not_only_but_also(value)
+            value = _reduce_not_x_but_y(value)
+            value = _vary_repeated_demonstrative_openings(value)
             value = _split_long_compound_sentences(value)
             value = _split_long_contrast_sentences(value)
             value = _split_long_colon_clauses(value)
+            value = _break_overloaded_academic_sentence(value)
 
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
@@ -808,7 +912,12 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     # Engine 1 to prefer edits that also reduce the same public AI-style signals
     # shown on the dashboard.
     from services.ai_detector import ai_check_report
-    before_ai_signal = int(ai_check_report(original, global_report=before_report, academic=True).get("ai_detection_percentage", 0))
+    before_detector = ai_check_report(original, global_report=before_report, academic=True)
+    before_ai_signal = int(before_detector.get("ai_detection_percentage", 0))
+    targeted_signals = [
+        str(signal.get("key")) for signal in before_detector.get("signals", [])
+        if int(signal.get("score", 0)) > 0
+    ]
 
     if normalised_mode in {"off", "none", "disabled", "0", "false"} or not original.strip():
         report = dict(before_report)
@@ -848,8 +957,7 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             output.append(_refine_mixed_block(part, connector_seen, level=level))
 
         candidate = "".join(output)
-        candidate = re.sub(r" +\n", "\n", candidate)
-        candidate = re.sub(r"\n{3,}", "\n\n", candidate).strip()
+        candidate = re.sub(r"[ \t]+\n", "\n", candidate).strip()
         valid, issues = validate_humanizer_preservation(
             original, candidate, max_word_change_ratio=local_change_limit
         )
@@ -889,6 +997,12 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         })
         return original, report
 
+    after_detector = ai_check_report(best_text, global_report=best_report, academic=True)
+    before_by_key = {str(signal.get("key")): float(signal.get("weighted_score", signal.get("score", 0))) for signal in before_detector.get("signals", [])}
+    after_by_key = {str(signal.get("key")): float(signal.get("weighted_score", signal.get("score", 0))) for signal in after_detector.get("signals", [])}
+    addressed_signals = [key for key in targeted_signals if after_by_key.get(key, 0.0) < before_by_key.get(key, 0.0)]
+    retained_signals = [key for key in targeted_signals if key not in addressed_signals]
+
     report = dict(best_report)
     report.update({
         "mode": normalised_mode, "applied_level": best_level, "engine": "engine1",
@@ -899,5 +1013,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         "ai_signal_before": before_ai_signal,
         "ai_signal_after": best_ai_signal,
         "ai_signal_reduction": before_ai_signal - best_ai_signal,
+        "targeted_signals": targeted_signals,
+        "addressed_signals": addressed_signals,
+        "retained_signals": retained_signals,
     })
     return best_text, report

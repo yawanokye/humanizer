@@ -114,4 +114,14 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.8.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.9.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+
+
+## v1.9 detector and Engine 1 correction
+
+- AI Signal is now a direct percentage conversion of the weighted 0–27 forensic net score.
+- The nine A–I categories use reliability weights; scholarly rhetoric/register signals are down-weighted.
+- A separate humanness counter-evidence score is subtracted before the final index.
+- Headings, tables, form rows and table punctuation are excluded from prose-style scoring.
+- Engine 1 fixes a masking bug that previously caused long documents with statistics/equations to fail preservation and return unchanged.
+- Deep mode applies signal-directed safe edits to formulaic connectors, not-X/but-Y scaffolding, repeated openings and overloaded sentence joins while preserving citations, statistics, tables, equations and references.
