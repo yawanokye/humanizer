@@ -27,7 +27,7 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train the Scholarly Humanizer v2.3 held-out-selected calibration meta-classifier.")
+    parser = argparse.ArgumentParser(description="Train the Scholarly Humanizer v2.4 locked-test-selected calibration meta-classifier.")
     parser.add_argument("corpus", type=Path, help="JSONL corpus with label, source_family, discipline and text fields")
     parser.add_argument("--output", type=Path, default=ROOT / "calibration" / "meta_classifier.json")
     args = parser.parse_args()

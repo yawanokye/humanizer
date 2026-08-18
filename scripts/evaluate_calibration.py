@@ -38,7 +38,7 @@ def group_metrics(rows: list[dict], probabilities: list[float], key: str) -> dic
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate a v2.3 calibration model on an independent labelled JSONL corpus.")
+    parser = argparse.ArgumentParser(description="Evaluate a v2.4 calibration model on an independent labelled JSONL corpus.")
     parser.add_argument("model", type=Path)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--output", type=Path)
