@@ -90,8 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.8.0', html)
-        self.assertIn('/static/style.css?v=1.8.0', html)
+        self.assertIn('/static/app.js?v=1.9.0', html)
+        self.assertIn('/static/style.css?v=1.9.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -303,6 +303,60 @@ Markowitz, Harry. \"Portfolio Selection.\" The Journal of Finance, 1952, pp. 77-
         self.assertIn("(Markowitz 77-91)", revised)
         self.assertTrue(report["preservation_passed"])
         self.assertNotIn("The present assignment", revised)
+
+
+    def test_weighted_forensic_score_maps_directly_to_ai_percentage(self) -> None:
+        report = dashboard_report(SAMPLE)
+        expected = round((float(report["ai_score"]) / 27) * 100)
+        self.assertEqual(report["ai_detection_percentage"], expected)
+        self.assertIn("weighted_raw_score", report["ai_detector"])
+        self.assertIn("humanness_counter_score", report["ai_detector"])
+
+    def test_table_em_dashes_do_not_trigger_punctuation_ai_signal(self) -> None:
+        text = """4. Results
+Table 2. Model selection
+Classes\tAIC\tBIC\tEntropy
+1\t6830.4\t6952.2\t—
+2\t3422.1\t3669.2\t0.996
+
+The three-class model minimises BIC and provides clear classification certainty."""
+        report = dashboard_report(text)
+        by_key = {item["key"]: item for item in report["ai_signal_breakdown"]}
+        self.assertEqual(by_key["G"]["score"], 0)
+
+    def test_long_statistical_document_is_not_forced_to_fixed_38_percent(self) -> None:
+        text = """Abstract
+The analysis uses 1,089 observations across 218 countries. Mean completeness was 15.4% in 2018 and 16.0% in 2022. The Friedman test was significant at p < 0.001, while Kendall W = 0.032.
+
+1. Introduction
+Public procurement data support comparison across countries. The study uses the World Bank Global Public Procurement Database and reports exact methods and statistics."""
+        report = dashboard_report(text)
+        self.assertNotEqual(report["ai_detection_percentage"], 38)
+        self.assertEqual(report["human_like_style_percentage"], 100 - report["ai_detection_percentage"])
+
+    def test_engine1_signal_directed_rewrite_reports_addressed_categories(self) -> None:
+        text = (
+            "Public procurement transparency depends not only on laws and reports but also on operational data. "
+            "The study examines what agencies publish and how reporting changes over time (Adam, 2024)."
+        )
+        before = dashboard_report(text)
+        revised, report = humanize_scholarly_text(text, "deep")
+        after = dashboard_report(revised)
+        self.assertNotEqual(revised, text)
+        self.assertTrue(report["preservation_passed"])
+        self.assertTrue(report.get("targeted_signals"))
+        self.assertTrue(report.get("addressed_signals"))
+        self.assertLessEqual(after["ai_detection_percentage"], before["ai_detection_percentage"])
+
+    def test_masking_preserves_decimal_statistics_and_equations(self) -> None:
+        text = (
+            "The effect was small (Kendall W = 0.032), while the Wilcoxon result was p = 0.463. "
+            "The equilibrium expression is pi = delta Sigma w_m and the estimate is 15.4% (Adam, 2024)."
+        )
+        revised, report = humanize_scholarly_text(text, "deep")
+        self.assertTrue(report["preservation_passed"], report.get("preservation_issues"))
+        for token in ["W = 0.032", "p = 0.463", "pi = delta Sigma w_m", "15.4%", "(Adam, 2024)"]:
+            self.assertIn(token, revised)
 
 
 
