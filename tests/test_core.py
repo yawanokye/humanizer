@@ -23,7 +23,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertTrue(report["segments"])
         self.assertIn("risk-segment", report["highlighted_html"])
         self.assertEqual(len(report["ai_signal_breakdown"]), 9)
-        self.assertIn(report["ai_verdict"], {"Human", "Likely Human", "Uncertain", "Likely AI", "AI"})
+        self.assertIn(report["ai_verdict"], {"Minimal AI-style signal", "Low AI-style signal", "Moderate AI-style signal", "Elevated AI-style signal", "Strong AI-style signal"})
         self.assertGreaterEqual(report["naturalness_percentage"], 0)
         self.assertLessEqual(report["naturalness_percentage"], 100)
         self.assertEqual(report["human_like_style_percentage"], 100 - report["ai_detection_percentage"])
@@ -90,8 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.7.0', html)
-        self.assertIn('/static/style.css?v=1.7.0', html)
+        self.assertIn('/static/app.js?v=1.8.0', html)
+        self.assertIn('/static/style.css?v=1.8.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -99,14 +99,14 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         ai_like = """It is important to note that digital transformation has become increasingly important. Furthermore, organizations often face key challenges in this rapidly evolving landscape. Moreover, it is clear that robust and comprehensive strategies can often lead to significant improvements. Additionally, these approaches facilitate innovation, foster collaboration, and streamline operations. What surprised me was the consistency of the pattern. The key insight is that success is not just about technology, but also about people. Taken together, this highlights the importance of a nuanced and multifaceted approach. In conclusion, organizations should leverage these insights to achieve enduring success."""
         report = dashboard_report(ai_like)
         self.assertGreaterEqual(report["ai_score"], 14)
-        self.assertIn(report["ai_verdict"], {"Likely AI", "AI"})
+        self.assertIn(report["ai_verdict"], {"Moderate AI-style signal", "Elevated AI-style signal", "Strong AI-style signal"})
         self.assertGreaterEqual(report["ai_detection_percentage"], 50)
 
     def test_academic_calibration_does_not_treat_normal_style_as_ai(self) -> None:
         academic = """Public procurement systems shape how public agencies convert budgets into goods and services. In Ghana, procurement entities operate under statutory rules that assign responsibilities to tender committees, evaluation panels, heads of entities and oversight bodies. These arrangements matter because weak compliance can delay projects and increase transaction costs. Prior empirical work reports mixed effects of digital procurement on competition and disclosure, partly because implementation quality differs across agencies (Mensah, 2024). This study therefore examines whether system integration is associated with procurement transparency while controlling for institutional capacity."""
         report = dashboard_report(academic)
         self.assertLess(report["ai_score"], 9)
-        self.assertIn(report["ai_verdict"], {"Human", "Likely Human"})
+        self.assertIn(report["ai_verdict"], {"Minimal AI-style signal", "Low AI-style signal"})
 
     def test_dashboard_is_ai_detector_first(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -256,6 +256,53 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertTrue(report["preservation_passed"])
         self.assertLessEqual(after["ai_detection_percentage"], before["ai_detection_percentage"])
         self.assertIn("(Adam, 2024)", revised)
+
+
+
+    def test_dashboard_removes_ai_edited_fraction_and_explains_detector_variability(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        report = dashboard_report(SAMPLE)
+        self.assertNotIn("Estimated AI-edited fraction", html)
+        self.assertIn('id="forensicScore"', html)
+        self.assertIn('id="detectorVariability"', html)
+        self.assertIn("Different detectors may disagree substantially", report["disclaimer"])
+        self.assertTrue(report["detector_variability_notice"])
+
+    def test_engine1_preserves_form_rows_tables_references_and_equations(self) -> None:
+        text = """FULL LEGAL NAME\tLOCATION (COUNTRY)\tEMAIL ADDRESS
+Anokye Mohammed Adam\tGhana\taadam@ucc.edu.gh
+
+1. Introduction
+It is important to note that the present assignment extends this foundation in three directions: it compares the portfolios, it tests robustness, and it reports the evidence (Markowitz 77-91). The expected return is 20.33% and pi = delta Sigma w_m.
+
+Table 1. Results
+Asset\tWeight
+WMT\t15.00%
+
+References
+Markowitz, Harry. \"Portfolio Selection.\" The Journal of Finance, 1952, pp. 77-91. doi:10.1111/test.
+"""
+        revised, report = humanize_scholarly_text(text, "deep")
+        self.assertTrue(report["preservation_passed"], report.get("preservation_issues"))
+        self.assertIn("Anokye Mohammed Adam\tGhana\taadam@ucc.edu.gh", revised)
+        self.assertIn("Asset\tWeight", revised)
+        self.assertIn("WMT\t15.00%", revised)
+        self.assertIn("pi = delta Sigma w_m", revised)
+        self.assertIn('Markowitz, Harry. "Portfolio Selection."', revised)
+        self.assertIn("References", revised)
+
+    def test_deep_engine1_can_change_safe_scholarly_cadence_without_content_drift(self) -> None:
+        text = (
+            "The present assignment extends the analysis in three directions: it compares the constrained portfolio with the benchmark, "
+            "it tests whether the numerical solution remains stable, and it reports out-of-sample evidence (Markowitz 77-91). "
+            "This distinction matters because the fitted solution can look attractive, but a production implementation should still account for estimation uncertainty."
+        )
+        revised, report = humanize_scholarly_text(text, "deep")
+        self.assertNotEqual(revised, text)
+        self.assertIn("(Markowitz 77-91)", revised)
+        self.assertTrue(report["preservation_passed"])
+        self.assertNotIn("The present assignment", revised)
 
 
 
