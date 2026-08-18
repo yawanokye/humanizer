@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any
+from http.client import RemoteDisconnected
+from typing import Any, Callable
 from urllib import error, request
 
 from scholarly_humanizer import (
@@ -21,7 +24,7 @@ class RefinerConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
-    timeout_seconds: int = 180
+    timeout_seconds: int = 150
 
     @classmethod
     def from_env(cls) -> "RefinerConfig":
@@ -51,7 +54,7 @@ class RefinerConfig:
             model=model,
             base_url=base_url,
             api_key=api_key,
-            timeout_seconds=int(os.getenv("HUMANIZER_TIMEOUT_SECONDS", "180")),
+            timeout_seconds=int(os.getenv("HUMANIZER_TIMEOUT_SECONDS", "150")),
         )
 
 
@@ -144,6 +147,12 @@ def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeo
         raise RefinerError(f"Model service returned HTTP {exc.code}: {body[:500]}") from exc
     except error.URLError as exc:
         raise RefinerError(f"Could not reach the model service: {exc.reason}") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RefinerError(f"Model request timed out after {timeout} seconds. The unchanged protected text was retained for this batch.") from exc
+    except (ConnectionResetError, RemoteDisconnected) as exc:
+        raise RefinerError("The model service closed the connection before returning a complete response. The unchanged protected text was retained for this batch.") from exc
+    except json.JSONDecodeError as exc:
+        raise RefinerError("The model service returned an incomplete or invalid response. The unchanged protected text was retained for this batch.") from exc
 
 
 def _system_prompt(mode: str = "balanced") -> str:
@@ -229,7 +238,15 @@ def refine_with_model(
     mode: str = "balanced",
     config: RefinerConfig | None = None,
     model_override: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    """Run Engine 2 with preservation-gated batches.
+
+    v2.4 can process independent API batches concurrently. This shortens wall-clock
+    time for long manuscripts and, together with the job endpoint, avoids keeping a
+    browser fetch open for the entire model rewrite.
+    """
+    progress_callback = progress_callback or (lambda _pct, _stage: None)
     cfg = config or RefinerConfig.from_env()
     public_level = "v2"
     if cfg.provider == "openai":
@@ -238,22 +255,20 @@ def refine_with_model(
     if not status["configured"]:
         return text, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level, "reason": "Engine 2 is not available on this deployment.", "batches": []}
 
-    batches = build_humanizer_batches(text)
-    outputs: list[str] = []
-    batch_reports: list[dict[str, Any]] = []
+    batch_words = max(700, min(3200, int(os.getenv("HUMANIZER_ENGINE2_BATCH_WORDS", "1800"))))
+    batches = build_humanizer_batches(text, max_words=batch_words)
     max_ratio = float(humanizer_variation_profile()["model_word_change_limit"])
-    for index, batch in enumerate(batches):
+    parallelism = max(1, min(4, int(os.getenv("HUMANIZER_ENGINE2_PARALLELISM", "2"))))
+    progress_callback(5, f"Preparing {len(batches)} protected API batch(es)…")
+
+    def process_one(index: int, batch: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
         batch_text = str(batch["text"])
         if batch.get("protected"):
-            outputs.append(batch_text)
-            batch_reports.append({"index": index, "protected": True, "applied": False})
-            continue
+            return index, batch_text, {"index": index, "protected": True, "applied": False}
         score = int((batch.get("diagnostic") or {}).get("naturalness_score", 0))
         should_refine = mode == "deep" or score < 92
         if not should_refine:
-            outputs.append(batch_text)
-            batch_reports.append({"index": index, "protected": False, "applied": False, "score": score, "reason": "Already above selective threshold"})
-            continue
+            return index, batch_text, {"index": index, "protected": False, "applied": False, "score": score, "reason": "Already above selective threshold"}
         try:
             if cfg.provider == "ollama":
                 candidate = _refine_ollama(batch_text, cfg, mode)
@@ -265,32 +280,56 @@ def refine_with_model(
                 raise RefinerError(f"Unsupported provider: {cfg.provider}")
             valid, issues = validate_humanizer_preservation(batch_text, candidate, max_word_change_ratio=max_ratio)
             if not valid:
-                outputs.append(batch_text)
-                batch_reports.append({"index": index, "applied": False, "score_before": score, "score_after": score, "naturalness_gain": 0, "preservation_issues": issues})
-            else:
-                candidate_score = int(analyse_scholarly_style(candidate).get("naturalness_score", 0))
-                if candidate_score < score:
-                    outputs.append(batch_text)
-                    batch_reports.append({
-                        "index": index, "applied": False, "score_before": score, "score_after": score,
-                        "naturalness_gain": 0, "preservation_issues": [],
-                        "reason": "API candidate was rejected because it reduced naturalness.",
-                    })
-                else:
-                    outputs.append(candidate)
-                    batch_reports.append({
-                        "index": index, "applied": candidate != batch_text, "score_before": score,
-                        "score_after": candidate_score, "naturalness_gain": candidate_score - score,
-                        "preservation_issues": [],
-                    })
+                return index, batch_text, {"index": index, "applied": False, "score_before": score, "score_after": score, "naturalness_gain": 0, "preservation_issues": issues}
+            candidate_score = int(analyse_scholarly_style(candidate).get("naturalness_score", 0))
+            if candidate_score < score:
+                return index, batch_text, {
+                    "index": index, "applied": False, "score_before": score, "score_after": score,
+                    "naturalness_gain": 0, "preservation_issues": [],
+                    "reason": "API candidate was rejected because it reduced naturalness.",
+                }
+            return index, candidate, {
+                "index": index, "applied": candidate != batch_text, "score_before": score,
+                "score_after": candidate_score, "naturalness_gain": candidate_score - score,
+                "preservation_issues": [],
+            }
         except RefinerError as exc:
-            outputs.append(batch_text)
-            batch_reports.append({"index": index, "applied": False, "score": score, "error": str(exc)})
+            return index, batch_text, {"index": index, "applied": False, "score": score, "error": str(exc), "fallback_retained": True}
+        except Exception as exc:
+            # A single model/network failure must not terminate the full document job.
+            return index, batch_text, {"index": index, "applied": False, "score": score, "error": f"Engine 2 batch failed safely: {exc}", "fallback_retained": True}
+
+    results: dict[int, tuple[str, dict[str, Any]]] = {}
+    completed = 0
+    total = max(1, len(batches))
+    if parallelism == 1 or len(batches) <= 1:
+        for index, batch in enumerate(batches):
+            idx, output, report = process_one(index, batch)
+            results[idx] = (output, report)
+            completed += 1
+            progress_callback(int(8 + (completed / total) * 86), f"Engine 2 batch {completed}/{total} completed…")
+    else:
+        with ThreadPoolExecutor(max_workers=min(parallelism, len(batches)), thread_name_prefix="engine2-api") as pool:
+            future_map = {pool.submit(process_one, index, batch): index for index, batch in enumerate(batches)}
+            for future in as_completed(future_map):
+                idx, output, report = future.result()
+                results[idx] = (output, report)
+                completed += 1
+                progress_callback(int(8 + (completed / total) * 86), f"Engine 2 batch {completed}/{total} completed…")
+
+    ordered = [results[index] for index in range(len(batches))]
+    outputs = [item[0] for item in ordered]
+    batch_reports = [item[1] for item in ordered]
     revised = "\n\n".join(outputs).strip()
+    failures = sum(1 for report in batch_reports if report.get("error"))
+    progress_callback(100, "Engine 2 API refinement finished…")
     return revised, {
         "applied": revised != text,
         "engine": "engine2",
         "label": "Engine 2, API rewrite",
         "level": public_level,
         "batches": batch_reports,
+        "batch_count": len(batch_reports),
+        "failed_batches": failures,
+        "parallelism": min(parallelism, max(1, len(batches))),
     }
