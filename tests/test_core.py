@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -90,8 +91,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.1.0', html)
-        self.assertIn('/static/style.css?v=2.1.0', html)
+        self.assertIn('/static/app.js?v=2.3.0', html)
+        self.assertIn('/static/style.css?v=2.3.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -442,6 +443,140 @@ Public procurement data support comparison across countries. The study uses the 
         self.assertIn("targeted_score_before", data["engine_3"])
         self.assertIn("targeted_score_after", data["engine_3"])
         self.assertIn("engine_3", data)
+
+
+    def test_v22_calibration_fallback_is_explicit(self) -> None:
+        from services.calibration import calibration_status
+        with patch.dict(os.environ, {"HUMANIZER_CALIBRATION_MODEL": "/tmp/nonexistent-humanizer-calibration.json"}, clear=False):
+            status = calibration_status()
+            report = dashboard_report(SAMPLE)
+        self.assertFalse(status["trained"])
+        self.assertEqual(report["score_source"], "transparent_four_layer_ensemble")
+        self.assertIn("calibration_features", report)
+        self.assertIn(report["decision_status"], {"Screening estimate", "Indeterminate"})
+
+    def test_v22_meta_classifier_can_train_without_sklearn(self) -> None:
+        from services.calibration import train_logistic_meta_classifier
+        rows = []
+        for i in range(20):
+            rows.append({"label": 0, "features": {"forensic_pct": 5 + i % 3, "statistical_pct": 10, "paragraph_pct": 8, "regularity_pct": 5}})
+        for i in range(20):
+            rows.append({"label": 1, "features": {"forensic_pct": 75 + i % 3, "statistical_pct": 80, "paragraph_pct": 72, "regularity_pct": 65}})
+        model = train_logistic_meta_classifier(rows, epochs=500)
+        self.assertTrue(model["trained"])
+        self.assertEqual(model["sample_count"], 40)
+        self.assertGreater(model["metrics"]["f1"], 0.8)
+
+    def test_v22_reference_lm_is_optional_and_honest(self) -> None:
+        from services.reference_lm import score_reference_lm
+        with patch.dict(os.environ, {"REFERENCE_LM_ENABLED": "false"}, clear=False):
+            result = score_reference_lm("A short scholarly sentence about procurement transparency.")
+        self.assertFalse(result["scored"])
+        self.assertEqual(result["mode"], "disabled")
+
+    def test_v22_preservation_certificate_is_returned(self) -> None:
+        from app import HumanizeRequest, humanize
+        text = "The study reports 15.4% completeness in 2022 (Adam, 2024)."
+        data = humanize(HumanizeRequest(text=text, mode="deep", engine="engine1"))
+        certificate = data["preservation_certificate"]
+        self.assertTrue(certificate["passed"])
+        self.assertTrue(certificate["checks"]["numbers"])
+        self.assertTrue(certificate["checks"]["citations"])
+
+    def test_v22_engine3_can_target_statistical_fingerprints(self) -> None:
+        detector = {
+            "signals": [],
+            "statistical_components": {"burstiness": 75, "systemic_transitions": 60, "ngram_frequency": 45},
+        }
+        text = "Furthermore, the study examines procurement data. Moreover, the study examines procurement reporting. Additionally, the study examines procurement outcomes."
+        revised, report = humanize_signal_guided(text, detector, "deep")
+        self.assertIn("B", report["targeted_signals"])
+        self.assertIn("F", report["targeted_signals"])
+        self.assertIn("D", report["targeted_signals"])
+        self.assertTrue(report["targeted_statistical_metrics"])
+        self.assertTrue(report["preservation_passed"])
+
+    def test_v22_frontend_exposes_calibration_and_preservation(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('data-tab="calibration"', html)
+        self.assertIn('id="calibrationDetails"', html)
+        self.assertIn('id="preservationCertificate"', html)
+        self.assertIn("renderCalibration", js)
+        self.assertIn("renderPreservation", js)
+
+    def test_v23_section_profile_is_exposed(self) -> None:
+        text = """Abstract
+This study examines procurement transparency using 218 countries and reports exact percentages.
+
+1. Introduction
+Public procurement links governments and suppliers through formal purchasing processes.
+
+3. Materials and methods
+The analysis uses a balanced panel and a Friedman test with p < 0.001.
+
+4. Results
+The result was 15.4% in 2018 and 16.0% in 2022.
+
+5. Discussion
+The findings suggest that reporting remains uneven across countries.
+
+6. Conclusion
+The evidence supports continued attention to data quality."""
+        report = dashboard_report(text)
+        self.assertIn("section_profile", report)
+        self.assertGreaterEqual(report["section_profile"]["methods"]["segment_count"], 1)
+        self.assertGreaterEqual(report["section_profile"]["results"]["segment_count"], 1)
+        self.assertIn("section_methods_mean", report["calibration_features"])
+
+    def test_v23_best_meta_classifier_uses_heldout_selection(self) -> None:
+        from services.calibration import train_best_meta_classifier, predict_probability_with_model
+        rows = []
+        for i in range(30):
+            rows.append({"label": 0, "features": {"forensic_pct": 4+i%4, "statistical_pct": 8+i%5, "paragraph_pct": 7, "regularity_pct": 6, "section_methods_mean": 5}})
+        for i in range(30):
+            rows.append({"label": 1, "features": {"forensic_pct": 72+i%5, "statistical_pct": 78+i%4, "paragraph_pct": 70, "regularity_pct": 62, "section_methods_mean": 55}})
+        model = train_best_meta_classifier(rows, validation_fraction=0.25, seed=7)
+        self.assertIn(model["model_type"], {"logistic", "gaussian_nb", "nearest_centroid"})
+        self.assertIn("validation_metrics", model)
+        self.assertIn("candidate_metrics", model)
+        self.assertEqual(set(model["candidate_metrics"]), {"logistic", "gaussian_nb", "nearest_centroid"})
+        pred = predict_probability_with_model(model, rows[-1]["features"])
+        self.assertGreater(pred["percentage"], 50)
+
+    def test_v23_engine3_endpoint_returns_before_after_maps(self) -> None:
+        from app import HumanizeRequest, humanize
+        text = "Furthermore, it is important to note that the study not only examines reporting but also evaluates procurement quality (Adam, 2024)."
+        data = humanize(HumanizeRequest(text=text, mode="deep", engine="engine3"))
+        self.assertIn("signal_map", data["engine_3"])
+        self.assertEqual(len(data["engine_3"]["signal_map"]), 9)
+        self.assertIn("statistical_map", data["engine_3"])
+        self.assertIn("section_profile_before", data["engine_3"])
+        self.assertIn("section_profile_after", data["engine_3"])
+
+    def test_v23_benchmark_lab_stores_provenance_and_external_scores(self) -> None:
+        from services.benchmark import add_sample, corpus_status
+        text = " ".join(["This is a provenance known human benchmark sentence about procurement reporting and scholarly writing quality."] * 6)
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HUMANIZER_BENCHMARK_DIR": tmp, "HUMANIZER_BENCHMARK_LAB_ENABLED": "true"}, clear=False):
+                add_sample(text=text, provenance="human_original", source_family="human", discipline="business", document_type="journal article", external_scores={"copyleaks": 60.4, "quillbot": 1})
+                status = corpus_status()
+        self.assertEqual(status["sample_count"], 1)
+        self.assertEqual(status["human_count"], 1)
+        self.assertEqual(status["external_detector_disagreement"]["samples_with_multiple_external_scores"], 1)
+
+    def test_v23_frontend_exposes_benchmark_validation_and_rewrite_audit(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('data-tab="benchmark"', html)
+        self.assertIn('data-tab="validation"', html)
+        self.assertIn('data-tab="rewriteaudit"', html)
+        self.assertIn('data-tab="sections"', html)
+        self.assertIn("renderValidationCentre", js)
+        self.assertIn("renderRewriteAudit", js)
+        self.assertIn("renderSectionProfile", js)
 
 
 if __name__ == "__main__":
