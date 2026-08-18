@@ -52,3 +52,6 @@ button,.upload-button{border:0;border-radius:10px;padding:11px 15px;font-weight:
 .detector-caution{margin:12px 0 10px;padding:12px 13px;border:1px solid #d8e4f2;border-radius:12px;background:#f7faff;color:#475569;font-size:12px;line-height:1.45}
 .detector-caution strong{display:block;margin-bottom:3px;color:#1e3a5f;font-size:12px}
 .detector-caution span{display:block}
+
+/* v1.9 weighted score arithmetic and signal-directed calibration */
+.score-arithmetic{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:#f8fafc;font-size:12px}.score-arithmetic b{margin-right:4px}.score-arithmetic span{padding:4px 7px;border-radius:999px;background:white;border:1px solid var(--line)}

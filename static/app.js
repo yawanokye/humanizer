@@ -47,7 +47,8 @@ function updateDashboard(report, comparison = null) {
   if (!comparison && $('aiGain')) $('aiGain').textContent = '';
   if ($('aiVerdict')) $('aiVerdict').textContent = detector.verdict || report.ai_verdict || '—';
   if ($('aiConfidence')) $('aiConfidence').textContent = detector.confidence || report.ai_confidence || '—';
-  if ($('forensicScore')) $('forensicScore').textContent = `${Number(detector.overall_score ?? report.ai_score ?? 0)} / ${Number(detector.max_score ?? report.ai_score_max ?? 27)}`;
+  if ($('forensicScore')) $('forensicScore').textContent = `${Number(detector.overall_score ?? report.ai_score ?? 0).toFixed(1)} / ${Number(detector.max_score ?? report.ai_score_max ?? 27)}`;
+  if ($('humannessCounter')) $('humannessCounter').textContent = `-${Number(detector.humanness_counter_score ?? 0)} point${Number(detector.humanness_counter_score ?? 0) === 1 ? '' : 's'}`;
   if ($('wordCount')) $('wordCount').textContent = report.metrics?.word_count ?? 0;
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
   if ($('activeSignals')) $('activeSignals').textContent = `${report.active_signal_categories ?? 0}/9`;
@@ -108,10 +109,19 @@ function renderDetector(detector) {
   const header = `
     <section class="detector-summary">
       <div><small>AI signal index</small><strong>${Number(detector.ai_detection_percentage || 0)}%</strong></div>
-      <div><small>Forensic category score</small><strong>${Number(detector.overall_score || 0)} / ${Number(detector.max_score || 27)}</strong></div>
+      <div><small>Weighted forensic score</small><strong>${Number(detector.overall_score || 0).toFixed(1)} / ${Number(detector.max_score || 27)}</strong></div>
       <div><small>Signal level</small><strong>${escapeHtml(detector.signal_level || detector.verdict || '—')}</strong></div>
       <div><small>Confidence</small><strong>${escapeHtml(detector.confidence || '—')}</strong></div>
     </section>`;
+
+  const arithmetic = `<section class="score-arithmetic">
+    <b>Score calculation</b>
+    <span>Raw A–I ${Number(detector.raw_category_score ?? 0)}/27</span>
+    <span>Weighted ${Number(detector.weighted_raw_score ?? 0).toFixed(2)}/25.05</span>
+    <span>Scaled ${Number(detector.scaled_score_before_humanness ?? 0).toFixed(2)}/27</span>
+    <span>Humanness −${Number(detector.humanness_counter_score ?? 0)}</span>
+    <span>Net ${Number(detector.overall_score ?? 0).toFixed(1)}/27 = ${Number(detector.ai_detection_percentage ?? 0)}%</span>
+  </section>`;
 
   const cards = signals.map(signal => {
     const score = Number(signal.score || 0);
@@ -120,7 +130,7 @@ function renderDetector(detector) {
       ? `<ul>${signal.evidence.map(item => `<li><span class="severity ${escapeHtml(item.severity || 'weak')}">${escapeHtml(item.severity || 'weak')}</span>${escapeHtml(item.description || '')}</li>`).join('')}</ul>`
       : '<p class="no-signal">No signal crossed the threshold.</p>';
     return `<article class="signal-card ${scoreTone(score)}">
-      <header><div><span class="signal-key">${escapeHtml(signal.key || '')}</span><h3>${escapeHtml(signal.name || '')}</h3></div><strong>${score}/3 <small>${pct}%</small></strong></header>
+      <header><div><span class="signal-key">${escapeHtml(signal.key || '')}</span><h3>${escapeHtml(signal.name || '')}</h3></div><strong>${score}/3 <small>${pct}% · ×${Number(signal.weight ?? 1).toFixed(2)}</small></strong></header>
       <p>${escapeHtml(signal.summary || '')}</p>
       <div class="bar"><i style="width:${pct}%"></i></div>
       ${evidence}
@@ -131,7 +141,7 @@ function renderDetector(detector) {
   const narrative = `<section class="detector-explanation"><h3>What gave it away</h3><p>${escapeHtml(detector.what_gave_it_away || '')}</p><h3>Calibration</h3><ul>${notes}</ul></section>`;
 
   target.className = 'detector-signals';
-  target.innerHTML = header + `<div class="signal-grid">${cards}</div>` + narrative;
+  target.innerHTML = header + arithmetic + `<div class="signal-grid">${cards}</div>` + narrative;
 }
 
 function renderFindings(segments) {
@@ -197,10 +207,12 @@ async function humanize() {
       : data.selected_engine === 'engine2'
         ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and rewrite-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
         : ' Engine 1 local rewrite completed without an API call.';
+    const addressed = data.engine_1?.addressed_signals || [];
+    const signalNote = addressed.length ? ` Addressed signal categories: ${addressed.join(', ')}.` : '';
     const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
     const aiNote = ` AI signal index ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
-    setMessage(`${outcome}${engineNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
+    setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
   } catch(e) {
     setMessage(e.message,'error');
   } finally {
@@ -302,6 +314,7 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('aiVerdict')) $('aiVerdict').textContent='—';
   if ($('aiConfidence')) $('aiConfidence').textContent='—';
   if ($('forensicScore')) $('forensicScore').textContent='—';
+  if ($('humannessCounter')) $('humannessCounter').textContent='—';
   if ($('wordCount')) $('wordCount').textContent='0';
   if ($('sentenceCount')) $('sentenceCount').textContent='0';
   if ($('activeSignals')) $('activeSignals').textContent='0/9';
