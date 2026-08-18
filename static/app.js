@@ -47,7 +47,7 @@ function updateDashboard(report, comparison = null) {
   if (!comparison && $('aiGain')) $('aiGain').textContent = '';
   if ($('aiVerdict')) $('aiVerdict').textContent = detector.verdict || report.ai_verdict || '—';
   if ($('aiConfidence')) $('aiConfidence').textContent = detector.confidence || report.ai_confidence || '—';
-  if ($('aiFraction')) $('aiFraction').textContent = detector.ai_edited_fraction || report.ai_edited_fraction || '—';
+  if ($('forensicScore')) $('forensicScore').textContent = `${Number(detector.overall_score ?? report.ai_score ?? 0)} / ${Number(detector.max_score ?? report.ai_score_max ?? 27)}`;
   if ($('wordCount')) $('wordCount').textContent = report.metrics?.word_count ?? 0;
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
   if ($('activeSignals')) $('activeSignals').textContent = `${report.active_signal_categories ?? 0}/9`;
@@ -64,6 +64,7 @@ function updateDashboard(report, comparison = null) {
     $('humanLikeGain').textContent = gain > 0 ? `▲ +${gain} points after rewrite` : gain < 0 ? `▼ ${Math.abs(gain)} points after rewrite` : 'no change after rewrite';
     $('humanLikeGain').className = `score-change humanlike-gain${gain < 0 ? ' negative' : ''}`;
   }
+  if ($('detectorVariability')) { const span = $('detectorVariability').querySelector('span'); if (span) span.textContent = report.detector_variability_notice || detector.detector_variability_notice || 'AI-writing detectors can disagree substantially, especially on formal academic prose. Use the score as a style-screening indicator, not proof of authorship.'; }
   if ($('disclaimer')) $('disclaimer').textContent = report.disclaimer || '';
 
   if ($('highlightedText')) {
@@ -108,9 +109,8 @@ function renderDetector(detector) {
     <section class="detector-summary">
       <div><small>AI signal index</small><strong>${Number(detector.ai_detection_percentage || 0)}%</strong></div>
       <div><small>Forensic category score</small><strong>${Number(detector.overall_score || 0)} / ${Number(detector.max_score || 27)}</strong></div>
-      <div><small>Verdict</small><strong>${escapeHtml(detector.verdict || '—')}</strong></div>
+      <div><small>Signal level</small><strong>${escapeHtml(detector.signal_level || detector.verdict || '—')}</strong></div>
       <div><small>Confidence</small><strong>${escapeHtml(detector.confidence || '—')}</strong></div>
-      <div class="wide"><small>AI-edited estimate</small><strong>${escapeHtml(detector.ai_edited_fraction || '—')}</strong></div>
     </section>`;
 
   const cards = signals.map(signal => {
@@ -301,7 +301,7 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width='0%';
   if ($('aiVerdict')) $('aiVerdict').textContent='—';
   if ($('aiConfidence')) $('aiConfidence').textContent='—';
-  if ($('aiFraction')) $('aiFraction').textContent='—';
+  if ($('forensicScore')) $('forensicScore').textContent='—';
   if ($('wordCount')) $('wordCount').textContent='0';
   if ($('sentenceCount')) $('sentenceCount').textContent='0';
   if ($('activeSignals')) $('activeSignals').textContent='0/9';
