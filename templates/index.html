@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.7.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.8.0">
 </head>
 <body>
   <header class="topbar">
@@ -68,9 +68,9 @@
         </section>
       </div>
       <div class="detector-meta">
-        <div><small>Verdict</small><strong id="aiVerdict">—</strong></div>
+        <div><small>Signal level</small><strong id="aiVerdict">—</strong></div>
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
-        <div class="wide"><small>Estimated AI-edited fraction</small><strong id="aiFraction">—</strong></div>
+        <div class="wide"><small>Forensic category score</small><strong id="forensicScore">—</strong></div>
       </div>
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
@@ -82,6 +82,7 @@
         <span><i class="dot natural"></i>Minimal signal</span><span><i class="dot low"></i>Low signal</span>
         <span><i class="dot moderate"></i>Moderate</span><span><i class="dot high"></i>High signal</span>
       </div>
+      <div class="detector-caution" id="detectorVariability"><strong>Detector variability</strong><span>AI-writing detectors can disagree substantially, especially on formal academic prose. Use the score as a style-screening indicator, not proof of authorship.</span></div>
       <p class="disclaimer" id="disclaimer">This detector estimates AI-like writing patterns. It does not prove authorship.</p>
     </aside>
 
@@ -111,6 +112,6 @@
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.7.0"></script>
+  <script src="/static/app.js?v=1.8.0"></script>
 </body>
 </html>
