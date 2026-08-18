@@ -84,3 +84,20 @@ The Benchmark Lab is a developer feature and remains off unless `HUMANIZER_BENCH
 The public application does not expose detector operating mode, calibration status, feature weights or reference-language-model status. To enable the private Benchmark Lab and Validation Centre, set `HUMANIZER_BENCHMARK_LAB_ENABLED=true` and **also** set a strong `HUMANIZER_DEVELOPER_TOKEN`. v2.4 refuses developer access when the token is missing. Use `/var/data/humanizer-calibration` on a persistent Render disk for `HUMANIZER_BENCHMARK_DIR`, and set `HUMANIZER_CALIBRATION_MODEL=/var/data/humanizer-calibration/meta_classifier.json`. `HUMANIZER_MAX_HUMAN_FPR=0.05` is the recommended starting ceiling for human false positives during threshold selection.
 
 Engine 2 displays only V1 (Light) and V2 (Moderate) in the browser. Provider model names remain server-side.
+
+## v2.4 long humanization requests
+
+The browser now starts `/api/humanize/jobs` and polls the short status endpoint instead of keeping one `/api/humanize` connection open for the whole rewrite. Keep `WEB_CONCURRENCY=1` when using the built-in in-process job queue so the status poll reaches the same process that owns the job.
+
+Recommended Render variables for Engine 2:
+
+```env
+HUMANIZER_TIMEOUT_SECONDS=150
+HUMANIZER_ENGINE2_BATCH_WORDS=1800
+HUMANIZER_ENGINE2_PARALLELISM=2
+HUMANIZER_JOB_WORKERS=1
+HUMANIZER_JOB_TTL_SECONDS=3600
+WEB_CONCURRENCY=1
+```
+
+Each Engine 2 batch now fails safely back to its unchanged protected text on model timeout, connection reset, or incomplete response. Long documents can process two API batches concurrently by default. For multi-instance production deployments, replace the in-process queue with a shared queue/background worker before increasing `WEB_CONCURRENCY` above 1.

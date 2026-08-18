@@ -199,3 +199,7 @@ HUMANIZER_MAX_HUMAN_FPR=0.05
 ```
 
 `HUMANIZER_DEVELOPER_TOKEN` is mandatory in v2.4. If it is missing, the private developer interface remains locked even when the Benchmark Lab flag is enabled.
+
+### v2.4 request resilience
+
+Humanization is submitted as a short-lived job request and the UI polls real server progress. This prevents multi-minute Engine 2 rewrites from depending on one uninterrupted browser HTTP connection. Engine 2 also supports bounded concurrent batches and per-batch safe fallback on model/network failures.

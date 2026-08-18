@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import html
 import os
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -29,10 +33,38 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.4.0",
+    version="2.4.2",
     description="Private-calibrated, robustness-tested scholarly AI-style screening with locked-test validation, model registry, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+# v2.4 long-request resilience. Humanization can involve multiple external model
+# calls and should not keep one browser HTTP request open for several minutes.
+_HUMANIZE_JOB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.getenv("HUMANIZER_JOB_WORKERS", "1"))),
+    thread_name_prefix="humanize-job",
+)
+_HUMANIZE_JOBS: dict[str, dict] = {}
+_HUMANIZE_JOBS_LOCK = threading.Lock()
+_HUMANIZE_JOB_TTL_SECONDS = max(600, int(os.getenv("HUMANIZER_JOB_TTL_SECONDS", "3600")))
+
+def _clean_humanize_jobs() -> None:
+    cutoff = time.time() - _HUMANIZE_JOB_TTL_SECONDS
+    with _HUMANIZE_JOBS_LOCK:
+        stale = [job_id for job_id, job in _HUMANIZE_JOBS.items() if float(job.get("updated_at", 0)) < cutoff and job.get("status") in {"completed", "failed"}]
+        for job_id in stale:
+            _HUMANIZE_JOBS.pop(job_id, None)
+
+def _update_humanize_job(job_id: str, **changes) -> None:
+    with _HUMANIZE_JOBS_LOCK:
+        job = _HUMANIZE_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(changes)
+        job["updated_at"] = time.time()
+
+def _job_progress(job_id: str, progress: int, stage: str) -> None:
+    _update_humanize_job(job_id, progress=max(0, min(99, int(progress))), stage=str(stage))
 
 
 class TextRequest(BaseModel):
@@ -304,12 +336,14 @@ def analyse(payload: TextRequest) -> dict:
     return dashboard_report(text)
 
 
-@app.post("/api/humanize")
-def humanize(payload: HumanizeRequest) -> dict:
+def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None] | None = None) -> dict:
+    progress = progress or (lambda _progress, _stage: None)
     original = _validate_size(payload.text)
     selected_engine = "engine2" if payload.use_model else payload.engine
     actual_engine = selected_engine
+    progress(8, "Analysing source text…")
     original_dashboard = dashboard_report(original)
+    progress(18, "Preparing rewrite engine…")
 
     engine1_report = {
         "applied": False, "engine": "engine1", "label": "Engine 1, Local rewrite",
@@ -326,9 +360,11 @@ def humanize(payload: HumanizeRequest) -> dict:
     revised = original
 
     if selected_engine == "engine1":
+        progress(28, "Running Engine 1 local rewrite…")
         revised, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
 
     elif selected_engine == "engine3":
+        progress(28, "Running Engine 3 signal-guided rewrite…")
         revised, engine3_report = humanize_signal_guided(
             original,
             detector=original_dashboard.get("ai_detector", {}),
@@ -336,6 +372,7 @@ def humanize(payload: HumanizeRequest) -> dict:
         )
 
     elif selected_engine == "engine2":
+        progress(24, "Running protected local preparation…")
         # Engine 2 begins from the independent local cleanup so the API spends its
         # effort on higher-level prose rather than obvious mechanical artifacts.
         engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
@@ -349,7 +386,13 @@ def humanize(payload: HumanizeRequest) -> dict:
                 "fallback_used": True,
             }
         elif payload.mode in {"balanced", "deep"}:
-            revised, engine2_report = refine_with_model(engine1_text, mode=payload.mode, model_override=payload.engine2_model)
+            progress(38, "Engine 2 API refinement in progress…")
+            revised, engine2_report = refine_with_model(
+                engine1_text,
+                mode=payload.mode,
+                model_override=payload.engine2_model,
+                progress_callback=lambda pct, stage: progress(38 + int(max(0, min(100, pct)) * 0.34), stage),
+            )
         else:
             actual_engine = "engine1_fallback"
             revised = engine1_text
@@ -359,7 +402,9 @@ def humanize(payload: HumanizeRequest) -> dict:
                 "fallback_used": True,
             }
 
+    progress(74, "Checking rewrite quality and preservation…")
     revised_dashboard = dashboard_report(revised)
+    progress(88, "Running independent post-rewrite audit…")
     before_naturalness = int(original_dashboard.get("naturalness_percentage", 0))
     after_naturalness = int(revised_dashboard.get("naturalness_percentage", 0))
     before_ai_signal = int(original_dashboard.get("ai_detection_percentage", 0))
@@ -417,6 +462,7 @@ def humanize(payload: HumanizeRequest) -> dict:
         }
 
     preservation = preservation_certificate(original, revised)
+    progress(96, "Preparing revised text…")
 
     return {
         "selected_engine": selected_engine,
@@ -436,6 +482,66 @@ def humanize(payload: HumanizeRequest) -> dict:
         "local_humanizer": engine1_report,
         "model_refiner": engine2_report,
     }
+
+
+@app.post("/api/humanize")
+def humanize(payload: HumanizeRequest) -> dict:
+    """Backward-compatible synchronous endpoint. The v2.4 UI uses jobs below."""
+    return _humanize_core(payload)
+
+def _run_humanize_job(job_id: str, payload_data: dict) -> None:
+    try:
+        _update_humanize_job(job_id, status="running", progress=5, stage="Starting humanization…")
+        payload = HumanizeRequest(**payload_data)
+        result = _humanize_core(payload, progress=lambda pct, stage: _job_progress(job_id, pct, stage))
+        _update_humanize_job(
+            job_id,
+            status="completed",
+            progress=100,
+            stage="Humanization completed",
+            result=result,
+            error=None,
+        )
+    except Exception as exc:
+        # Keep the browser connection healthy and surface a useful error through polling.
+        _update_humanize_job(
+            job_id,
+            status="failed",
+            progress=100,
+            stage="Humanization failed",
+            error=str(exc) or exc.__class__.__name__,
+        )
+
+@app.post("/api/humanize/jobs", status_code=202)
+def start_humanize_job(payload: HumanizeRequest) -> dict:
+    _clean_humanize_jobs()
+    # Validate the large field before returning 202 so obviously invalid jobs fail immediately.
+    _validate_size(payload.text)
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    with _HUMANIZE_JOBS_LOCK:
+        _HUMANIZE_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 2,
+            "stage": "Queued for humanization…",
+            "result": None,
+            "error": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+    _HUMANIZE_JOB_EXECUTOR.submit(_run_humanize_job, job_id, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
+    return {"job_id": job_id, "status": "queued", "progress": 2, "stage": "Queued for humanization…"}
+
+@app.get("/api/humanize/jobs/{job_id}")
+def humanize_job_status(job_id: str) -> dict:
+    _clean_humanize_jobs()
+    with _HUMANIZE_JOBS_LOCK:
+        job = _HUMANIZE_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Humanization job was not found or has expired.")
+        # Return a copy so the worker can update safely after this response is built.
+        return dict(job)
 
 
 @app.post("/api/export/docx")

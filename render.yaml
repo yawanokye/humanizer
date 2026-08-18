@@ -19,7 +19,15 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: HUMANIZER_TIMEOUT_SECONDS
-        value: "180"
+        value: "150"
+      - key: HUMANIZER_ENGINE2_BATCH_WORDS
+        value: "1800"
+      - key: HUMANIZER_ENGINE2_PARALLELISM
+        value: "2"
+      - key: HUMANIZER_JOB_WORKERS
+        value: "1"
+      - key: HUMANIZER_JOB_TTL_SECONDS
+        value: "3600"
       - key: HUMANIZER_MAX_INPUT_CHARS
         value: "1200000"
       - key: HUMANIZER_MAX_UPLOAD_BYTES
