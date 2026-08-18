@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scholarly_humanizer import humanize_scholarly_text, validate_humanizer_preservation
+from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided, validate_humanizer_preservation
 from services.analyzer import dashboard_report
 from services.document_io import build_docx
 from services.model_refiner import RefinerConfig, provider_status
@@ -90,8 +90,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=1.9.0', html)
-        self.assertIn('/static/style.css?v=1.9.0', html)
+        self.assertIn('/static/app.js?v=2.1.0', html)
+        self.assertIn('/static/style.css?v=2.1.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -127,12 +127,14 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertEqual(report["naturalness_gain"], after - before)
 
 
-    def test_humanizer_recomputes_and_can_reduce_ai_signal_index(self) -> None:
+    def test_humanizer_is_detector_independent_and_detector_recomputes_afterwards(self) -> None:
         before = dashboard_report(SAMPLE)
-        revised, _ = humanize_scholarly_text(SAMPLE, "deep")
+        revised, local = humanize_scholarly_text(SAMPLE, "deep")
         after = dashboard_report(revised)
-        self.assertGreater(after["naturalness_percentage"], before["naturalness_percentage"])
-        self.assertLess(after["ai_detection_percentage"], before["ai_detection_percentage"])
+        self.assertGreaterEqual(after["naturalness_percentage"], before["naturalness_percentage"])
+        self.assertTrue(local.get("detector_independent"))
+        self.assertIn("ai_detection_percentage", after)
+        self.assertNotIn("targeted_signals", local)
 
     def test_render_blueprint_preconfigures_engine2_openai(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -158,13 +160,12 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertIn('human_like_style_improvement', js)
         self.assertNotIn("$('naturalScore')", js)
 
-    def test_humanize_endpoint_never_lowers_humanlike_style(self) -> None:
+    def test_humanize_endpoint_reports_independent_post_rewrite_audit(self) -> None:
         from app import HumanizeRequest, humanize
         data = humanize(HumanizeRequest(text=SAMPLE, mode="deep", engine="engine1"))
-        self.assertGreaterEqual(
-            data["report"]["human_like_style_percentage"],
-            data["original_report"]["human_like_style_percentage"],
-        )
+        self.assertTrue(data["engine_1"].get("detector_independent"))
+        self.assertIn("ai_signal_improvement", data)
+        self.assertIn("human_like_style_improvement", data)
 
     def test_humanlike_style_is_exact_complement_after_humanize(self) -> None:
         before = dashboard_report(SAMPLE)
@@ -243,7 +244,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         self.assertTrue(data["engine_2"].get("fallback_used"))
         self.assertIn("OPENAI_API_KEY", data["engine_2"].get("reason", ""))
 
-    def test_deep_humanizer_makes_safe_formulaic_changes_and_does_not_worsen_ai_index(self) -> None:
+    def test_deep_humanizer_makes_safe_formulaic_changes_independent_of_ai_index(self) -> None:
         formulaic = (
             "It is important to note that the analysis provides a comprehensive assessment of the evidence. "
             "Moreover, the study considers institutional context. Moreover, the study examines implementation conditions. "
@@ -254,7 +255,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         after = dashboard_report(revised)
         self.assertNotEqual(revised, formulaic)
         self.assertTrue(report["preservation_passed"])
-        self.assertLessEqual(after["ai_detection_percentage"], before["ai_detection_percentage"])
+        self.assertTrue(report.get("detector_independent"))
+        self.assertIn("ai_detection_percentage", after)
         self.assertIn("(Adam, 2024)", revised)
 
 
@@ -305,12 +307,20 @@ Markowitz, Harry. \"Portfolio Selection.\" The Journal of Finance, 1952, pp. 77-
         self.assertNotIn("The present assignment", revised)
 
 
-    def test_weighted_forensic_score_maps_directly_to_ai_percentage(self) -> None:
+    def test_composite_ai_score_reconciles_to_visible_components(self) -> None:
         report = dashboard_report(SAMPLE)
-        expected = round((float(report["ai_score"]) / 27) * 100)
+        detector = report["ai_detector"]
+        weights = detector["composite_weights"]
+        base = round(
+            detector["category_signal_percentage"] * weights["forensic"]
+            + detector["statistical_fingerprint_percentage"] * weights["statistical"]
+            + detector["segment_signal_percentage"] * weights["segments"]
+            + detector["consistency_signal_percentage"] * weights["document_consistency"]
+        )
+        expected = min(100, base + int(detector.get("corroboration_bonus", 0)))
         self.assertEqual(report["ai_detection_percentage"], expected)
-        self.assertIn("weighted_raw_score", report["ai_detector"])
-        self.assertIn("humanness_counter_score", report["ai_detector"])
+        self.assertEqual(detector["overall_score"], round(detector["scaled_score_before_humanness"], 1))
+        self.assertIn("humanness_counter_score", detector)
 
     def test_table_em_dashes_do_not_trigger_punctuation_ai_signal(self) -> None:
         text = """4. Results
@@ -334,19 +344,17 @@ Public procurement data support comparison across countries. The study uses the 
         self.assertNotEqual(report["ai_detection_percentage"], 38)
         self.assertEqual(report["human_like_style_percentage"], 100 - report["ai_detection_percentage"])
 
-    def test_engine1_signal_directed_rewrite_reports_addressed_categories(self) -> None:
+    def test_engine1_rewrite_is_quality_directed_not_detector_directed(self) -> None:
         text = (
             "Public procurement transparency depends not only on laws and reports but also on operational data. "
             "The study examines what agencies publish and how reporting changes over time (Adam, 2024)."
         )
-        before = dashboard_report(text)
         revised, report = humanize_scholarly_text(text, "deep")
-        after = dashboard_report(revised)
         self.assertNotEqual(revised, text)
         self.assertTrue(report["preservation_passed"])
-        self.assertTrue(report.get("targeted_signals"))
-        self.assertTrue(report.get("addressed_signals"))
-        self.assertLessEqual(after["ai_detection_percentage"], before["ai_detection_percentage"])
+        self.assertTrue(report.get("detector_independent"))
+        self.assertIn("rewrite_objectives", report)
+        self.assertNotIn("addressed_signals", report)
 
     def test_masking_preserves_decimal_statistics_and_equations(self) -> None:
         text = (
@@ -358,6 +366,82 @@ Public procurement data support comparison across countries. The study uses the 
         for token in ["W = 0.032", "p = 0.463", "pi = delta Sigma w_m", "15.4%", "(Adam, 2024)"]:
             self.assertIn(token, revised)
 
+    def test_long_line_extraction_creates_paragraph_level_profile(self) -> None:
+        text = "\n".join([
+            "This study examines procurement reporting using a structured cross-country dataset and reports the resulting evidence in a carefully organised paragraph with several analytical claims." for _ in range(6)
+        ])
+        report = dashboard_report(text)
+        self.assertGreaterEqual(report["prose_segment_count"], 6)
+        self.assertEqual(report["prose_segment_count"], report["ai_detector"]["segment_count"])
+
+    def test_humanness_counter_evidence_does_not_subtract_ai_style_score(self) -> None:
+        text = (
+            "We analysed the World Bank Global Public Procurement Database on 18 August 2026. "
+            "Furthermore, it is important to note that organizations often leverage comprehensive approaches to address key challenges. "
+            "Moreover, these strategies can often lead to significant improvements."
+        )
+        detector = dashboard_report(text)["ai_detector"]
+        self.assertGreaterEqual(detector["humanness_counter_score"], 1)
+        self.assertEqual(detector["overall_score"], round(detector["scaled_score_before_humanness"], 1))
+
+    def test_app_does_not_reject_rewrite_for_ai_score_increase(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        app_source = (root / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn("or after_ai_signal > before_ai_signal", app_source)
+        self.assertIn("Writing-quality guard applies to all engines", app_source)
+
+
+    def test_v21_statistical_fingerprint_is_exposed(self) -> None:
+        report = dashboard_report(SAMPLE)
+        detector = report["ai_detector"]
+        self.assertIn("statistical_fingerprint_percentage", report)
+        self.assertIn("statistical_fingerprint_percentage", detector)
+        self.assertIn("statistical_components", detector)
+        self.assertEqual(detector["composite_weights"]["statistical"], 0.35)
+
+    def test_signal_coloured_text_contains_ai_family_badges(self) -> None:
+        text = "Furthermore, it is important to note that this study uses a comprehensive approach."
+        report = dashboard_report(text)
+        coloured = report["signal_coloured_html"]
+        self.assertIn("signal-text", coloured)
+        self.assertIn("signal-badge", coloured)
+        self.assertRegex(coloured, r"signal-[A-I]")
+
+    def test_frontend_exposes_engine3_and_signal_colour_tab(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('value="engine3"', html)
+        self.assertIn('data-tab="signalcolours"', html)
+        self.assertIn('id="signalColouredText"', html)
+        self.assertIn("engine3", js)
+
+    def test_engine3_targets_detected_signals_and_preserves_evidence(self) -> None:
+        text = (
+            "It is important to note that the study not only examines procurement data but also evaluates reporting quality (Adam, 2024). "
+            "Furthermore, the analysis uses 15.4% as the observed completeness rate; moreover, the result is presented with a long and highly regular sentence structure."
+        )
+        before = dashboard_report(text)
+        revised, report = humanize_signal_guided(text, before["ai_detector"], "deep")
+        valid, issues = validate_humanizer_preservation(text, revised, max_word_change_ratio=0.65)
+        self.assertTrue(valid, issues)
+        self.assertEqual(report["engine"], "engine3")
+        self.assertFalse(report["detector_independent"])
+        self.assertTrue(report["targeted_signals"])
+        self.assertIn("15.4%", revised)
+        self.assertIn("(Adam, 2024)", revised)
+
+    def test_engine3_endpoint_reports_targeted_score_change(self) -> None:
+        from app import HumanizeRequest, humanize
+        text = (
+            "It is important to note that digital systems not only facilitate reporting but also streamline monitoring. "
+            "Furthermore, organizations often leverage comprehensive strategies to address key challenges."
+        )
+        data = humanize(HumanizeRequest(text=text, mode="deep", engine="engine3"))
+        self.assertEqual(data["selected_engine"], "engine3")
+        self.assertIn("targeted_score_before", data["engine_3"])
+        self.assertIn("targeted_score_after", data["engine_3"])
+        self.assertIn("engine_3", data)
 
 
 if __name__ == "__main__":
