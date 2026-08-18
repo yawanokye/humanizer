@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from scholarly_humanizer import humanize_scholarly_text
+from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided
 from services.analyzer import dashboard_report
 from services.document_io import build_annotated_docx, build_docx, extract_text
 from services.model_refiner import provider_status, refine_with_model
@@ -22,8 +22,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="1.8.0",
-    description="Calibrated nine-signal AI-style screening with complementary Human-like Style scoring, evidence-locked Engine 1 local rewrite and optional Engine 2 API rewrite.",
+    version="2.1.0",
+    description="Four-layer AI-style screening with signal-coloured diagnostics, independent Engine 1, optional API Engine 2, and preservation-gated signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -34,7 +34,7 @@ class TextRequest(BaseModel):
 
 class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
-    engine: Literal["engine1", "engine2"] = "engine1"
+    engine: Literal["engine1", "engine2", "engine3"] = "engine1"
     engine2_model: Literal["gpt-5.6-terra", "gpt-5.6-luna"] = "gpt-5.6-terra"
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
@@ -108,11 +108,18 @@ def healthz() -> dict[str, str]:
 @app.get("/api/status")
 def status() -> dict:
     provider = provider_status()
+    engines = dict(provider.get("engines", {}) or {})
+    engines.setdefault("engine1", {"configured": True, "label": "Engine 1, Local rewrite"})
+    engines["engine3"] = {
+        "configured": True,
+        "label": "Engine 3, Signal-Guided rewrite",
+        "message": "Local signal-guided rewrite is ready. It targets detected A-I style signals and uses the preservation gate.",
+    }
     return {
         "ok": True,
         "version": app.version,
         "model": provider,
-        "engines": provider.get("engines", {}),
+        "engines": engines,
         "max_input_chars": MAX_INPUT_CHARS,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
@@ -140,25 +147,42 @@ def humanize(payload: HumanizeRequest) -> dict:
     original = _validate_size(payload.text)
     selected_engine = "engine2" if payload.use_model else payload.engine
     actual_engine = selected_engine
+    original_dashboard = dashboard_report(original)
 
-    engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
+    engine1_report = {
+        "applied": False, "engine": "engine1", "label": "Engine 1, Local rewrite",
+        "reason": "Engine 1 was not selected.",
+    }
     engine2_report = {
-        "applied": False,
-        "engine": "engine2",
-        "label": "Engine 2, API rewrite",
+        "applied": False, "engine": "engine2", "label": "Engine 2, API rewrite",
         "reason": "Engine 2 was not selected.",
     }
-    revised = engine1_text
+    engine3_report = {
+        "applied": False, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite",
+        "reason": "Engine 3 was not selected.",
+    }
+    revised = original
 
-    if selected_engine == "engine2":
+    if selected_engine == "engine1":
+        revised, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
+
+    elif selected_engine == "engine3":
+        revised, engine3_report = humanize_signal_guided(
+            original,
+            detector=original_dashboard.get("ai_detector", {}),
+            mode=payload.mode,
+        )
+
+    elif selected_engine == "engine2":
+        # Engine 2 begins from the independent local cleanup so the API spends its
+        # effort on higher-level prose rather than obvious mechanical artifacts.
+        engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
         status = provider_status()
         if not status.get("configured"):
             actual_engine = "engine1_fallback"
             revised = engine1_text
             engine2_report = {
-                "applied": False,
-                "engine": "engine2",
-                "label": "Engine 2, API rewrite",
+                "applied": False, "engine": "engine2", "label": "Engine 2, API rewrite",
                 "reason": status.get("engines", {}).get("engine2", {}).get("message", "Engine 2 API rewrite is not configured."),
                 "fallback_used": True,
             }
@@ -168,14 +192,11 @@ def humanize(payload: HumanizeRequest) -> dict:
             actual_engine = "engine1_fallback"
             revised = engine1_text
             engine2_report = {
-                "applied": False,
-                "engine": "engine2",
-                "label": "Engine 2, API rewrite",
+                "applied": False, "engine": "engine2", "label": "Engine 2, API rewrite",
                 "reason": "Engine 2 is available only in balanced or deep mode. Engine 1 fallback was used.",
                 "fallback_used": True,
             }
 
-    original_dashboard = dashboard_report(original)
     revised_dashboard = dashboard_report(revised)
     before_naturalness = int(original_dashboard.get("naturalness_percentage", 0))
     after_naturalness = int(revised_dashboard.get("naturalness_percentage", 0))
@@ -184,20 +205,36 @@ def humanize(payload: HumanizeRequest) -> dict:
     before_human_like = 100 - before_ai_signal
     after_human_like = 100 - after_ai_signal
 
-    # Final guard: a humanisation request must not degrade either the internal
-    # rewrite-quality metric or the public complementary style profile. Engine 1
-    # and Engine 2 already apply preservation gates, but this protects the fully
-    # assembled document as well.
-    if after_naturalness < before_naturalness or after_ai_signal > before_ai_signal:
+    # Writing-quality guard applies to all engines. Engine 3 is intentionally
+    # detector-coupled, but it still cannot trade scholarly quality for a lower score.
+    if after_naturalness < before_naturalness:
         revised = original
         revised_dashboard = original_dashboard
         after_naturalness = before_naturalness
         after_ai_signal = before_ai_signal
-        before_human_like = 100 - before_ai_signal
         after_human_like = before_human_like
         if selected_engine == "engine2":
-            engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because it degraded the protected rewrite-quality or Human-like Style profile."}
-            actual_engine = "engine1_fallback" if engine1_text != original else "none"
+            engine2_report = {**engine2_report, "applied": False, "reason": "Final API rewrite was rejected because it degraded the protected rewrite-quality profile."}
+            actual_engine = "engine1_fallback" if engine1_report.get("applied") else "none"
+        elif selected_engine == "engine3":
+            engine3_report = {**engine3_report, "applied": False, "reason": "Signal-guided candidate was rejected because it degraded the protected rewrite-quality profile."}
+            actual_engine = "none"
+        else:
+            engine1_report = {**engine1_report, "applied": False, "reason": "Local candidate was rejected because it degraded the protected rewrite-quality profile."}
+            actual_engine = "none"
+
+    before_signals = {str(x.get("key")): int(x.get("score") or 0) for x in original_dashboard.get("ai_detector", {}).get("signals", [])}
+    after_signals = {str(x.get("key")): int(x.get("score") or 0) for x in revised_dashboard.get("ai_detector", {}).get("signals", [])}
+    targeted = list(engine3_report.get("targeted_signals") or []) if selected_engine == "engine3" else []
+    targeted_before = sum(before_signals.get(key, 0) for key in targeted)
+    targeted_after = sum(after_signals.get(key, 0) for key in targeted)
+    if selected_engine == "engine3":
+        engine3_report = {
+            **engine3_report,
+            "targeted_score_before": targeted_before,
+            "targeted_score_after": targeted_after,
+            "targeted_score_reduction": targeted_before - targeted_after,
+        }
 
     return {
         "selected_engine": selected_engine,
@@ -207,24 +244,12 @@ def humanize(payload: HumanizeRequest) -> dict:
         "original_report": original_dashboard,
         "text": revised,
         "report": revised_dashboard,
-        "naturalness_improvement": {
-            "before": before_naturalness,
-            "after": after_naturalness,
-            "gain": after_naturalness - before_naturalness,
-        },
-        "ai_signal_improvement": {
-            "before": before_ai_signal,
-            "after": after_ai_signal,
-            "reduction": before_ai_signal - after_ai_signal,
-        },
-        "human_like_style_improvement": {
-            "before": before_human_like,
-            "after": after_human_like,
-            "gain": after_human_like - before_human_like,
-        },
+        "naturalness_improvement": {"before": before_naturalness, "after": after_naturalness, "gain": after_naturalness - before_naturalness},
+        "ai_signal_improvement": {"before": before_ai_signal, "after": after_ai_signal, "reduction": before_ai_signal - after_ai_signal},
+        "human_like_style_improvement": {"before": before_human_like, "after": after_human_like, "gain": after_human_like - before_human_like},
         "engine_1": engine1_report,
         "engine_2": engine2_report,
-        # Backward-compatible response keys.
+        "engine_3": engine3_report,
         "local_humanizer": engine1_report,
         "model_refiner": engine2_report,
     }
@@ -251,17 +276,24 @@ def export_docx(payload: ExportRequest) -> Response:
 def export_html(payload: ExportRequest) -> Response:
     text = _validate_size(payload.text)
     report = dashboard_report(text)
-    body = report["highlighted_html"] if payload.annotated else html.escape(text).replace("\n", "<br>")
+    body = report["signal_coloured_html"] if payload.annotated else html.escape(text).replace("\n", "<br>")
     legend = (
-        "<div class='legend'><b>AI signal key:</b> red = high signal, orange = moderate, "
-        "yellow = low, green = natural.</div>"
+        "<div class='legend'><b>A–I signal colours:</b> A predictability · B burstiness · C hedging · D structure · "
+        "E specificity · F transitions · G punctuation · H voice/register · I rhetorical scaffolding.</div>"
         if payload.annotated
         else ""
     )
     document = f"""<!doctype html><html><head><meta charset='utf-8'><title>{html.escape(payload.title)}</title>
-    <style>body{{font-family:Arial,sans-serif;max-width:980px;margin:40px auto;line-height:1.65;padding:0 24px}}
-    .risk-high{{background:#fecaca}}.risk-moderate{{background:#fed7aa}}.risk-low{{background:#fef3c7}}.risk-natural{{background:#dcfce7}}
-    .risk-protected{{border-bottom:1px dotted #94a3b8}} .legend{{padding:12px;background:#f8fafc;border:1px solid #e2e8f0;margin-bottom:20px}}</style>
+    <style>body{{font-family:Arial,sans-serif;max-width:980px;margin:40px auto;line-height:1.75;padding:0 24px}}
+    .legend{{padding:12px;background:#f8fafc;border:1px solid #e2e8f0;margin-bottom:20px}}
+    .signal-text{{text-decoration-line:underline;text-decoration-thickness:3px;text-underline-offset:4px}}
+    .signal-badge{{display:inline-block;margin-left:3px;padding:1px 4px;border-radius:999px;font:700 9px Arial}}
+    .signal-A,.signal-text-A{{color:#6b21a8;text-decoration-color:#9333ea}} .signal-B,.signal-text-B{{color:#1d4ed8;text-decoration-color:#2563eb}}
+    .signal-C,.signal-text-C{{color:#0f766e;text-decoration-color:#0d9488}} .signal-D,.signal-text-D{{color:#c2410c;text-decoration-color:#ea580c}}
+    .signal-E,.signal-text-E{{color:#15803d;text-decoration-color:#16a34a}} .signal-F,.signal-text-F{{color:#0e7490;text-decoration-color:#0891b2}}
+    .signal-G,.signal-text-G{{color:#be123c;text-decoration-color:#e11d48}} .signal-H,.signal-text-H{{color:#4338ca;text-decoration-color:#4f46e5}}
+    .signal-I,.signal-text-I{{color:#be185d;text-decoration-color:#db2777}} .protected-text{{border-bottom:1px dotted #94a3b8}}
+    </style>
     </head><body><h1>{html.escape(payload.title)}</h1>{legend}<div>{body}</div></body></html>"""
     return Response(
         content=document.encode("utf-8"),

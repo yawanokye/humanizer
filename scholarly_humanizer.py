@@ -283,10 +283,55 @@ def _coefficient_of_variation(values: list[int]) -> float:
     return (_std_dev(values) / mean) if mean else 0.0
 
 
+def _style_prose_units(text: str) -> list[str]:
+    """Return editable prose units without references, tables, forms or headings.
+
+    This mirrors how extracted DOCX/TXT files commonly represent one paragraph
+    per line. The style metric must not let reference-list entries or table rows
+    dominate sentence-opening and cadence statistics.
+    """
+    units: list[str] = []
+    buffer: list[str] = []
+    reference_tail = False
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer:
+            value = " ".join(buffer).strip()
+            if _word_count(value) >= 6:
+                units.append(value)
+            buffer = []
+
+    for line in str(text or "").splitlines():
+        stripped = re.sub(r"\s+", " ", line).strip()
+        if not stripped:
+            flush()
+            continue
+        if _REFERENCE_HEADING_RE.match(stripped):
+            flush()
+            reference_tail = True
+            continue
+        if reference_tail:
+            continue
+        if _is_protected_line(line):
+            flush()
+            continue
+        wc = _word_count(stripped)
+        if wc >= 18:
+            flush()
+            units.append(stripped)
+        else:
+            buffer.append(stripped)
+            if re.search(r"[.!?][\]\)\"'’”]*$", stripped) and sum(_word_count(x) for x in buffer) >= 12:
+                flush()
+    flush()
+    return units
+
+
 def analyse_scholarly_style(text: str) -> dict[str, Any]:
     """Return an explainable diagnostic for natural scholarly prose."""
     value = str(text or "")
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", value) if part.strip() and not _is_protected_block(part)]
+    paragraphs = _style_prose_units(value)
     sentences: list[str] = []
     for paragraph in paragraphs:
         sentences.extend([item.strip() for item in _SENTENCE_RE.split(paragraph) if item.strip()])
@@ -477,18 +522,29 @@ def _restore_protected_spans(text: str, protected: dict[str, str]) -> str:
 
 
 def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: str) -> str:
-    """Refine prose lines while copying structural/table/form lines byte-for-byte."""
+    """Refine prose line-by-line while copying structural content byte-for-byte.
+
+    Extracted DOCX/TXT content often places each original paragraph on its own
+    line without an extra blank line. Treating the whole block as one paragraph
+    merged adjacent paragraphs during rewriting. Multi-line blocks are therefore
+    refined one line at a time, preserving the original line/paragraph boundaries.
+    """
     value = str(block or "")
     lines = value.splitlines(keepends=True)
-    if not any(_is_protected_line(line) for line in lines if line.strip()):
-        return _refine_paragraph(value, connector_seen, level=level)
+    nonempty = [line for line in lines if line.strip()]
+    if len(nonempty) <= 1:
+        return value if (not nonempty or _is_protected_line(nonempty[0])) else _refine_paragraph(value, connector_seen, level=level)
 
     out: list[str] = []
     for line in lines:
-        ending = "\n" if line.endswith("\n") else ""
-        core = line[:-1] if ending else line
+        if line.endswith("\r\n"):
+            ending, core = "\r\n", line[:-2]
+        elif line.endswith("\n"):
+            ending, core = "\n", line[:-1]
+        else:
+            ending, core = "", line
         if not core.strip() or _is_protected_line(core):
-            out.append(line)
+            out.append(core + ending)
         else:
             out.append(_refine_paragraph(core, connector_seen, level=level) + ending)
     return "".join(out)
@@ -896,28 +952,179 @@ def build_humanizer_batches(text: str, *, max_words: int = 2600) -> list[dict[st
     return batches
 
 
+def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], signal_keys: set[str], *, level: str) -> str:
+    """Signal-guided local pass used only by Engine 3.
+
+    It deliberately targets diagnosed A-I style families, while the preservation
+    validator still locks evidence-bearing content. Categories E and H are not
+    force-fixed because adding specificity or personal voice could fabricate content.
+    """
+    original = str(paragraph or "")
+    value, protected = _mask_protected_spans(original.strip())
+
+    # A/C/F: remove low-information metadiscourse and mechanical transitions.
+    if signal_keys & {"A", "C", "F"}:
+        value = re.sub(r"\b(?:it is important to note that|it is worth noting that|it should be noted that)\s+", "", value, flags=re.I)
+        value = re.sub(r"(?i)^(?:Furthermore|Moreover|Additionally|In addition|Taken together|Overall),\s+", "", value)
+        value = re.sub(r"\b(?:a myriad of|a plethora of)\b", "many", value, flags=re.I)
+        value = re.sub(r"\bin the realm of\b", "in", value, flags=re.I)
+        value = re.sub(r"\bthe landscape of\b", "the context of", value, flags=re.I)
+        value = re.sub(r"\butilize\b", "use", value, flags=re.I)
+        value = re.sub(r"\butilizes\b", "uses", value, flags=re.I)
+        value = re.sub(r"\butilized\b", "used", value, flags=re.I)
+        value = re.sub(r"\bstreamline\b", "simplify", value, flags=re.I)
+
+    # D/I: flatten over-composed rhetorical symmetry without changing the propositions.
+    if signal_keys & {"D", "I"}:
+        value = _reduce_not_only_but_also(value)
+        value = _reduce_not_x_but_y(value)
+        value = _vary_repeated_demonstrative_openings(value)
+        value = _soften_repeated_study_openings(value)
+        value = re.sub(r"\b(?:What (?:this|the) (?:shows|demonstrates) is that)\s+", "", value, flags=re.I)
+
+    # B/G: vary cadence by splitting only safe independent-clause joins and
+    # replace dramatic dash wrapping with ordinary scholarly punctuation.
+    if signal_keys & {"B", "G"}:
+        if "G" in signal_keys:
+            value = re.sub(r"\s+—\s+([^—\n]{1,120})\s+—\s+", r", \1, ", value)
+            value = re.sub(r"\s+—\s+", ", ", value)
+        value = _split_long_semicolon_sentences(value)
+        if level in {"balanced", "deep"}:
+            value = _split_long_compound_sentences(value)
+            value = _split_long_contrast_sentences(value)
+        if level == "deep":
+            value = _split_long_colon_clauses(value)
+            value = _break_overloaded_academic_sentence(value)
+
+    # Reuse the general safe cleanup after the signal-specific changes. Engine 3
+    # still differs from Engine 1 because the transformations above are selected
+    # directly from the detector profile.
+    value = _restore_protected_spans(value, protected)
+    value = _refine_paragraph(value, connector_seen, level=level)
+    return value.strip()
+
+
+def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep") -> tuple[str, dict[str, Any]]:
+    """Engine 3: identify active forensic signals and target them explicitly.
+
+    Unlike Engine 1 this engine is detector-coupled by design. It does not invent
+    evidence to fix specificity/voice signals, and every candidate must pass the
+    same scholarly preservation validator before it can be returned.
+    """
+    original = str(text or "")
+    normalised_mode = str(mode or "deep").strip().lower()
+    signals = list((detector or {}).get("signals") or [])
+    active = [str(item.get("key")) for item in signals if int(item.get("score") or 0) > 0]
+    # E/H are diagnostic-only unless another editable category is also active.
+    editable = [key for key in active if key not in {"E", "H"}]
+    before_style = analyse_scholarly_style(original)
+    before_score = int(before_style.get("naturalness_score", 0))
+
+    if not original.strip() or not editable:
+        report = dict(before_style)
+        report.update({
+            "mode": normalised_mode, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite",
+            "applied": False, "preservation_passed": True, "preservation_issues": [],
+            "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
+            "targeted_signals": editable, "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
+            "detector_independent": False,
+            "reason": "No safely editable A-I signal was active." if active else "No active forensic signal was detected.",
+        })
+        return original, report
+
+    levels = {
+        "light": ["light"],
+        "balanced": ["balanced", "deep"],
+        "deep": ["deep"],
+    }.get(normalised_mode, ["deep"])
+    original_words = max(1, _word_count(original))
+    change_limit = 0.65 if original_words < 150 else max(0.18, min(0.52, 110 / original_words))
+    candidates: list[tuple[int, int, str, str, dict[str, Any]]] = []
+    failures: list[str] = []
+
+    for level in levels:
+        connector_seen: dict[str, int] = {}
+        output: list[str] = []
+        reference_tail = False
+        # Preserve the exact line structure so tables and extracted paragraphs are
+        # not merged. Each prose line is independently signal-guided.
+        for line in original.splitlines(keepends=True):
+            if line.endswith("\r\n"):
+                ending, core = "\r\n", line[:-2]
+            elif line.endswith("\n"):
+                ending, core = "\n", line[:-1]
+            else:
+                ending, core = "", line
+            stripped = core.strip()
+            if _REFERENCE_HEADING_RE.match(stripped):
+                reference_tail = True
+            if reference_tail or not stripped or _is_protected_line(core):
+                output.append(core + ending)
+            else:
+                output.append(_guided_cleanup_paragraph(core, connector_seen, set(editable), level=level) + ending)
+        candidate = "".join(output).strip()
+        valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=change_limit)
+        if not valid:
+            failures.extend(issues)
+            continue
+        style = analyse_scholarly_style(candidate)
+        naturalness = int(style.get("naturalness_score", 0))
+        changed_chars = sum(1 for a, b in zip(original, candidate) if a != b) + abs(len(original) - len(candidate))
+        candidates.append((naturalness, changed_chars, level, candidate, style))
+
+    if not candidates:
+        report = dict(before_style)
+        report.update({
+            "mode": normalised_mode, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite",
+            "applied": False, "preservation_passed": False,
+            "preservation_issues": sorted(set(failures)), "score_before": before_score,
+            "score_after": before_score, "naturalness_gain": 0, "targeted_signals": editable,
+            "diagnostic_only_signals": [k for k in active if k in {"E", "H"}], "detector_independent": False,
+            "reason": "No signal-guided candidate passed the scholarly preservation checks.",
+        })
+        return original, report
+
+    candidates.sort(key=lambda item: (-item[0], -item[1]))
+    after_score, changed_chars, applied_level, best, best_style = candidates[0]
+    report = dict(best_style)
+    report.update({
+        "mode": normalised_mode, "applied_level": applied_level, "engine": "engine3",
+        "label": "Engine 3, Signal-Guided rewrite", "applied": best != original,
+        "preservation_passed": True, "preservation_issues": [], "score_before": before_score,
+        "score_after": after_score, "naturalness_gain": after_score - before_score,
+        "targeted_signals": editable, "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
+        "detector_independent": False, "changed_characters": changed_chars,
+        "reason": "Rewrite explicitly targeted the active A-I signal families, then passed the scholarly preservation gate.",
+    })
+    return best, report
+
+
 def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dict[str, Any]]:
     """Improve scholarly naturalness with preservation-gated local editing.
 
-    Engine 1 is aggressive on editable prose but conservative on evidence. It creates
-    progressively stronger rule-based cadence candidates, locks structural and
-    evidence-bearing spans, verifies preservation, and keeps the strongest safe
-    non-degrading version.
+    Engine 1 is intentionally independent from the AI detector. It optimises
+    writing quality and cadence, then the application runs a separate detector
+    audit afterwards. This avoids selecting a rewrite merely because it learned
+    how to satisfy the application's own detector rubric.
     """
     original = str(text or "")
     normalised_mode = str(mode or "balanced").strip().lower()
     before_report = analyse_scholarly_style(original)
     before_score = int(before_report.get("naturalness_score", 0))
-    # Import locally to keep the core module usable on its own while allowing
-    # Engine 1 to prefer edits that also reduce the same public AI-style signals
-    # shown on the dashboard.
-    from services.ai_detector import ai_check_report
-    before_detector = ai_check_report(original, global_report=before_report, academic=True)
-    before_ai_signal = int(before_detector.get("ai_detection_percentage", 0))
-    targeted_signals = [
-        str(signal.get("key")) for signal in before_detector.get("signals", [])
-        if int(signal.get("score", 0)) > 0
-    ]
+
+    rewrite_objectives: list[str] = []
+    if int(before_report.get("generic_phrase_hits", 0)):
+        rewrite_objectives.append("formulaic or wordy scholarly phrasing")
+    if int(before_report.get("repeated_sentence_openings", 0)) or int(before_report.get("repeated_paragraph_openings", 0)):
+        rewrite_objectives.append("repeated sentence or paragraph openings")
+    if int(before_report.get("generic_connector_hits", 0)):
+        rewrite_objectives.append("mechanical transitions")
+    if int(before_report.get("long_sentence_count", 0)) or int(before_report.get("overloaded_sentence_count", 0)):
+        rewrite_objectives.append("overloaded sentence structure")
+    if bool(before_report.get("uniform_sentence_rhythm")) or bool(before_report.get("uniform_paragraph_rhythm")):
+        rewrite_objectives.append("uniform cadence")
+    if int(before_report.get("repeated_frame_density", 0)):
+        rewrite_objectives.append("repeated rhetorical framing")
 
     if normalised_mode in {"off", "none", "disabled", "0", "false"} or not original.strip():
         report = dict(before_report)
@@ -925,6 +1132,8 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             "mode": "off", "engine": "engine1", "label": "Engine 1, Local rewrite",
             "applied": False, "preservation_passed": True, "preservation_issues": [],
             "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
+            "rewrite_objectives": rewrite_objectives,
+            "detector_independent": True,
         })
         return original, report
 
@@ -935,9 +1144,13 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     }.get(normalised_mode, ["light", "balanced"])
 
     original_words = max(1, _word_count(original))
-    local_change_limit = 0.60 if original_words < 120 else max(0.12, min(0.45, 70 / original_words))
-    candidates: list[tuple[int, int, str, str, dict[str, Any]]] = []
+    # Preserve evidence strictly, but allow substantial local prose reshaping in
+    # Deep mode. The validator still locks numbers, citations, tables, headings,
+    # equations, emails and reference content.
+    local_change_limit = 0.60 if original_words < 120 else max(0.14, min(0.48, 90 / original_words))
+    candidates: list[tuple[int, int, int, str, str, dict[str, Any]]] = []
     preservation_failures: list[str] = []
+    level_rank = {"light": 0, "balanced": 1, "deep": 2}
 
     for level in allowed_levels:
         parts = re.split(r"(\n\s*\n)", original)
@@ -966,8 +1179,11 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             continue
         candidate_report = analyse_scholarly_style(candidate)
         score = int(candidate_report.get("naturalness_score", 0))
-        candidate_ai_signal = int(ai_check_report(candidate, global_report=candidate_report, academic=True).get("ai_detection_percentage", 0))
-        candidates.append((score, candidate_ai_signal, level, candidate, candidate_report))
+        changed_chars = sum(1 for a, b in zip(original, candidate) if a != b) + abs(len(original) - len(candidate))
+        # Naturalness is primary. For ties, prefer the requested deeper safe pass
+        # and then the candidate that made more genuine edits rather than silently
+        # returning an almost-identical version.
+        candidates.append((score, level_rank.get(level, 0), changed_chars, level, candidate, candidate_report))
 
     if not candidates:
         report = dict(before_report)
@@ -976,16 +1192,14 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             "applied": False, "preservation_passed": False,
             "preservation_issues": sorted(set(preservation_failures)),
             "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
+            "rewrite_objectives": rewrite_objectives,
+            "detector_independent": True,
             "reason": "No local candidate passed the preservation checks.",
         })
         return original, report
 
-    # Prefer naturalness first and lower AI-style signal second. When both are
-    # tied, honour the requested depth so Deep can still apply safe cadence
-    # improvements rather than silently returning the untouched Light candidate.
-    level_rank = {"light": 0, "balanced": 1, "deep": 2}
-    candidates.sort(key=lambda item: (-item[0], item[1], -level_rank.get(item[2], 0)))
-    best_score, best_ai_signal, best_level, best_text, best_report = candidates[0]
+    candidates.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+    best_score, _, changed_chars, best_level, best_text, best_report = candidates[0]
 
     if best_score < before_score:
         report = dict(before_report)
@@ -993,15 +1207,11 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             "mode": normalised_mode, "engine": "engine1", "label": "Engine 1, Local rewrite",
             "applied": False, "preservation_passed": True, "preservation_issues": [],
             "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
-            "reason": "Candidate was rejected because it reduced the naturalness score.",
+            "rewrite_objectives": rewrite_objectives,
+            "detector_independent": True,
+            "reason": "Candidate was rejected because it reduced the internal rewrite-quality score.",
         })
         return original, report
-
-    after_detector = ai_check_report(best_text, global_report=best_report, academic=True)
-    before_by_key = {str(signal.get("key")): float(signal.get("weighted_score", signal.get("score", 0))) for signal in before_detector.get("signals", [])}
-    after_by_key = {str(signal.get("key")): float(signal.get("weighted_score", signal.get("score", 0))) for signal in after_detector.get("signals", [])}
-    addressed_signals = [key for key in targeted_signals if after_by_key.get(key, 0.0) < before_by_key.get(key, 0.0)]
-    retained_signals = [key for key in targeted_signals if key not in addressed_signals]
 
     report = dict(best_report)
     report.update({
@@ -1010,11 +1220,10 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
         "preservation_passed": True, "preservation_issues": [],
         "score_before": before_score, "score_after": best_score,
         "naturalness_gain": best_score - before_score,
-        "ai_signal_before": before_ai_signal,
-        "ai_signal_after": best_ai_signal,
-        "ai_signal_reduction": before_ai_signal - best_ai_signal,
-        "targeted_signals": targeted_signals,
-        "addressed_signals": addressed_signals,
-        "retained_signals": retained_signals,
+        "rewrite_objectives": rewrite_objectives,
+        "detector_independent": True,
+        "changed_characters": changed_chars,
+        "reason": "Rewrite selected on preservation and writing quality only. AI detection is run independently afterwards.",
     })
     return best_text, report
+

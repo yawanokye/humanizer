@@ -1,6 +1,6 @@
 # Scholarly Humanizer, Render-ready standalone app
 
-A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It combines an explainable nine-signal AI-style detector with protected scholarly rewriting. It does not treat the detector score as proof of authorship.
+A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It combines an explainable four-layer AI-style detector with protected scholarly rewriting and three rewrite engines. It does not treat the detector score as proof of authorship.
 
 ## AI Detector and Human-like Style workflow
 
@@ -18,6 +18,7 @@ The existing humanizer still uses its internal Naturalness metric to choose the 
 - Sentence-level AI-signal colour map with explainable reasons and category evidence. The headline diagnostic counters show active signal categories and evidence items so they reconcile with the document-level index.
 - Engine 1, Local rewrite, evidence-locked humanisation that preserves names, emails, headings, numbers, years, citations, references, URLs, DOIs, equations, tables, form rows and action placeholders.
 - Engine 2, API rewrite, optional OpenAI-compatible or remote Ollama refinement with preservation validation and automatic fallback.
+- Engine 3, Signal-Guided rewrite, local preservation-gated editing that reads the active A–I detector profile and directly targets safely editable signals.
 - Light, balanced and deep modes.
 - Clean DOCX, annotated DOCX and coloured HTML export.
 - Stateless processing. The app does not require a database or persistent disk.
@@ -114,14 +115,28 @@ python -m unittest discover -s tests -v
 
 ### Browser cache after upgrading from the old AI-enabled control
 
-If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 1.9.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
+If a browser shows `Cannot read properties of null (reading 'checked')`, it is loading an older cached `app.js` that still expects the removed `useModel` checkbox. Version 2.1.0 cache-busts static assets, disables browser caching for the app shell/static JavaScript, and includes a hidden compatibility control so older cached code cannot crash the page. Redeploy this build and refresh the page once.
 
 
-## v1.9 detector and Engine 1 correction
+## v2.0 independent detector and paragraph-aware rewrite
 
-- AI Signal is now a direct percentage conversion of the weighted 0–27 forensic net score.
-- The nine A–I categories use reliability weights; scholarly rhetoric/register signals are down-weighted.
-- A separate humanness counter-evidence score is subtracted before the final index.
-- Headings, tables, form rows and table punctuation are excluded from prose-style scoring.
-- Engine 1 fixes a masking bug that previously caused long documents with statistics/equations to fail preservation and return unchanged.
-- Deep mode applies signal-directed safe edits to formulaic connectors, not-X/but-Y scaffolding, repeated openings and overloaded sentence joins while preserving citations, statistics, tables, equations and references.
+- AI Signal is now a composite style index rather than a direct conversion of one coarse 0–27 total. The visible calculation combines 30% weighted A–I categories, 40% paragraph/section distribution, 20% countable lexical/rhythm evidence and 10% document-level regularity.
+- Long extracted documents are segmented paragraph-by-paragraph even when DOCX/TXT/PDF extraction places each paragraph on its own line. This prevents a few concrete methods sections from diluting a more formulaic paragraph elsewhere.
+- Humanness/context evidence is still reported, but it adjusts confidence only. It no longer subtracts AI-style evidence from the headline score.
+- Engine 1 is detector-independent. It selects rewrites using preservation and writing-quality checks only. The AI detector runs afterwards as an independent audit, so Engine 1 cannot simply optimise against its own detector thresholds.
+- Deep mode preserves paragraph boundaries and evidence-bearing content while making safe changes to wordy formulaic phrasing, repeated openings, mechanical transitions and overloaded sentence structure.
+- The dashboard now shows prose segments screened, flagged prose segments, paragraph hotspots and the exact composite score components.
+- Tables, form rows, headings, references, equations, emails, citations, numbers and table punctuation remain excluded or locked as appropriate.
+
+
+## v2.1 statistical fingerprint, Engine 3 and signal colours
+
+- The headline AI Signal now uses four independent layers: **25% forensic A–I evidence, 35% continuous statistical fingerprint, 30% paragraph profile and 10% document regularity**. When several layers are simultaneously elevated, a small corroboration bonus prevents strong multi-layer evidence from being diluted by averaging.
+- The statistical fingerprint exposes continuous local metrics for predictability/perplexity proxy, burstiness, token-distribution proxy, repeated n-grams, semantic-density uniformity, repeated syntactic structures, transition concentration and vocabulary diversity. The perplexity/token fields are explicitly labelled proxies in this lightweight deployment because no reference language model is bundled into the Render image.
+- **Engine 1 remains detector-independent.** It improves natural scholarly prose without reading the A–I scores.
+- **Engine 2 remains the optional API engine** with Terra/Luna selection and the same preservation checks.
+- **Engine 3, Signal-Guided rewrite** reads the active A–I detector families and explicitly targets safely editable signals. E (specificity) and H (voice/register) are diagnostic-only when fixing them would require inventing detail or personal voice. Engine 3 reports the targeted A–I score before and after its rewrite.
+- Added a **Signal-coloured text** tab. Flagged sentences carry A–I badges and category-specific colours, and clicking a sentence shows the evidence that fired.
+- The coloured HTML export now uses the A–I category colours rather than only generic red/orange/yellow risk bands.
+- Added a **Statistical fingerprint** tab so users can inspect the continuous metrics behind the statistical layer.
+- Source-line-aware segmentation prevents title blocks, author affiliations, form rows and table lines from being misread as giant prose sentences.
