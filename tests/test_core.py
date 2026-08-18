@@ -91,8 +91,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.4.1', html)
-        self.assertIn('/static/style.css?v=2.4.1', html)
+        self.assertIn('/static/app.js?v=2.4.2', html)
+        self.assertIn('/static/style.css?v=2.4.2', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -639,6 +639,25 @@ The evidence supports continued attention to data quality."""
         self.assertIn('Export humanized text to Word (.docx)', html)
         self.assertIn('extracted to Source text. Click Detect AI when ready.', js)
         self.assertIn('function exportHumanizedWord()', js)
+
+
+    def test_v24_humanize_uses_pollable_job_endpoint(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        app_text = (root / "app.py").read_text(encoding="utf-8")
+        self.assertIn("/api/humanize/jobs", js)
+        self.assertIn("waitForHumanizeJob", js)
+        self.assertIn('@app.post("/api/humanize/jobs", status_code=202)', app_text)
+        self.assertIn('@app.get("/api/humanize/jobs/{job_id}")', app_text)
+
+    def test_v24_engine2_network_failures_fall_back_per_batch(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        refiner = (root / "services" / "model_refiner.py").read_text(encoding="utf-8")
+        self.assertIn("socket.timeout", refiner)
+        self.assertIn("RemoteDisconnected", refiner)
+        self.assertIn("fallback_retained", refiner)
+        self.assertIn("HUMANIZER_ENGINE2_PARALLELISM", refiner)
+
 
 
 if __name__ == "__main__":
