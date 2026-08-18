@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.8.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.9.0">
 </head>
 <body>
   <header class="topbar">
@@ -70,7 +70,8 @@
       <div class="detector-meta">
         <div><small>Signal level</small><strong id="aiVerdict">—</strong></div>
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
-        <div class="wide"><small>Forensic category score</small><strong id="forensicScore">—</strong></div>
+        <div><small>Weighted forensic score</small><strong id="forensicScore">—</strong></div>
+        <div><small>Humanness counter-evidence</small><strong id="humannessCounter">—</strong></div>
       </div>
       <div class="metric-grid">
         <div><span id="wordCount">0</span><small>Words</small></div>
@@ -112,6 +113,6 @@
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
   </main>
-  <script src="/static/app.js?v=1.8.0"></script>
+  <script src="/static/app.js?v=1.9.0"></script>
 </body>
 </html>
