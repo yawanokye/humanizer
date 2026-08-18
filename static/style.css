@@ -55,3 +55,26 @@ button,.upload-button{border:0;border-radius:10px;padding:11px 15px;font-weight:
 
 /* v1.9 weighted score arithmetic and signal-directed calibration */
 .score-arithmetic{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:#f8fafc;font-size:12px}.score-arithmetic b{margin-right:4px}.score-arithmetic span{padding:4px 7px;border-radius:999px;background:white;border:1px solid var(--line)}
+
+/* v2.0 independent detector + paragraph profile */
+.segment-profile-summary{border:1px solid var(--line);border-radius:13px;padding:15px;background:#fbfdff}.segment-profile-summary header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.segment-profile-summary h3{margin:0 0 4px;font-size:16px}.segment-profile-summary p{margin:0;color:var(--muted);font-size:12px;line-height:1.45}.segment-profile-summary header>strong{font-size:16px;color:#163a67;white-space:nowrap}.segment-hotspots{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px;margin-top:12px}.segment-hotspots article{border:1px solid #e5edf6;border-radius:10px;padding:10px;background:white}.segment-hotspots b{display:block;font-size:12px;color:#334155;margin-bottom:4px}.segment-hotspots span{display:block;color:#64748b;font-size:12px;line-height:1.4}.metric-grid{grid-template-columns:repeat(2,1fr)}
+
+/* v2.1 signal-family colour diagnostics and Engine 3 */
+.signal-colour-legend{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;padding:11px;border:1px solid var(--line);border-radius:12px;background:#fbfdff}
+.signal-colour-legend span,.signal-badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:800;border:1px solid transparent}
+.signal-text{position:relative;border-radius:3px;padding:1px 1px;cursor:pointer;text-decoration-thickness:3px;text-underline-offset:4px}
+.signal-text:focus,.signal-text:hover{outline:2px solid #315f98;outline-offset:2px}
+.signal-badge{margin-left:4px;padding:1px 5px;font:700 9px/1.4 ui-sans-serif,system-ui,sans-serif;vertical-align:middle}
+.protected-text{border-bottom:1px dotted #94a3b8;cursor:default}
+.signal-A,.signal-text-A{background:#f3e8ff;color:#6b21a8;border-color:#d8b4fe}.signal-text-A{text-decoration-color:#9333ea}
+.signal-B,.signal-text-B{background:#dbeafe;color:#1d4ed8;border-color:#93c5fd}.signal-text-B{text-decoration-color:#2563eb}
+.signal-C,.signal-text-C{background:#ccfbf1;color:#0f766e;border-color:#5eead4}.signal-text-C{text-decoration-color:#0d9488}
+.signal-D,.signal-text-D{background:#ffedd5;color:#c2410c;border-color:#fdba74}.signal-text-D{text-decoration-color:#ea580c}
+.signal-E,.signal-text-E{background:#dcfce7;color:#15803d;border-color:#86efac}.signal-text-E{text-decoration-color:#16a34a}
+.signal-F,.signal-text-F{background:#cffafe;color:#0e7490;border-color:#67e8f9}.signal-text-F{text-decoration-color:#0891b2}
+.signal-G,.signal-text-G{background:#ffe4e6;color:#be123c;border-color:#fda4af}.signal-text-G{text-decoration-color:#e11d48}
+.signal-H,.signal-text-H{background:#e0e7ff;color:#4338ca;border-color:#a5b4fc}.signal-text-H{text-decoration-color:#4f46e5}
+.signal-I,.signal-text-I{background:#fce7f3;color:#be185d;border-color:#f9a8d4}.signal-text-I{text-decoration-color:#db2777}
+.signal-text-A,.signal-text-B,.signal-text-C,.signal-text-D,.signal-text-E,.signal-text-F,.signal-text-G,.signal-text-H,.signal-text-I{text-decoration-line:underline;background:transparent}
+#engineSignalTarget{font-size:18px;letter-spacing:.03em}
+@media(max-width:520px){.signal-colour-legend{display:grid;grid-template-columns:1fr 1fr}}

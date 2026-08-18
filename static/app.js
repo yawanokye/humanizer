@@ -48,11 +48,15 @@ function updateDashboard(report, comparison = null) {
   if ($('aiVerdict')) $('aiVerdict').textContent = detector.verdict || report.ai_verdict || '—';
   if ($('aiConfidence')) $('aiConfidence').textContent = detector.confidence || report.ai_confidence || '—';
   if ($('forensicScore')) $('forensicScore').textContent = `${Number(detector.overall_score ?? report.ai_score ?? 0).toFixed(1)} / ${Number(detector.max_score ?? report.ai_score_max ?? 27)}`;
-  if ($('humannessCounter')) $('humannessCounter').textContent = `-${Number(detector.humanness_counter_score ?? 0)} point${Number(detector.humanness_counter_score ?? 0) === 1 ? '' : 's'}`;
+  if ($('humannessCounter')) $('humannessCounter').textContent = `${Number(detector.humanness_counter_score ?? 0)} point${Number(detector.humanness_counter_score ?? 0) === 1 ? '' : 's'} · confidence only`;
   if ($('wordCount')) $('wordCount').textContent = report.metrics?.word_count ?? 0;
   if ($('sentenceCount')) $('sentenceCount').textContent = report.metrics?.sentence_count ?? 0;
   if ($('activeSignals')) $('activeSignals').textContent = `${report.active_signal_categories ?? 0}/9`;
   if ($('evidenceCount')) $('evidenceCount').textContent = report.signal_evidence_items ?? 0;
+  if ($('proseSegments')) $('proseSegments').textContent = report.prose_segment_count ?? detector.segment_count ?? 0;
+  if ($('flaggedSegments')) $('flaggedSegments').textContent = report.flagged_prose_segments ?? detector.flagged_segment_count ?? 0;
+  if ($('statisticalFingerprint')) $('statisticalFingerprint').textContent = `${Number(report.statistical_fingerprint_percentage ?? detector.statistical_fingerprint_percentage ?? 0)}%`;
+  if ($('engineSignalTarget')) { const active=(detector.signals||[]).filter(x=>Number(x.score||0)>0).map(x=>x.key); $('engineSignalTarget').textContent=active.length ? active.join(', ') : 'None'; }
   if ($('aiScoreBar')) $('aiScoreBar').style.width = `${Math.max(0, Math.min(100, ai))}%`;
   if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${Math.max(0, Math.min(100, humanLike))}%`;
   if (comparison?.ai && $('aiGain')) {
@@ -65,15 +69,21 @@ function updateDashboard(report, comparison = null) {
     $('humanLikeGain').textContent = gain > 0 ? `▲ +${gain} points after rewrite` : gain < 0 ? `▼ ${Math.abs(gain)} points after rewrite` : 'no change after rewrite';
     $('humanLikeGain').className = `score-change humanlike-gain${gain < 0 ? ' negative' : ''}`;
   }
-  if ($('detectorVariability')) { const span = $('detectorVariability').querySelector('span'); if (span) span.textContent = report.detector_variability_notice || detector.detector_variability_notice || 'AI-writing detectors can disagree substantially, especially on formal academic prose. Use the score as a style-screening indicator, not proof of authorship.'; }
+  if ($('detectorVariability')) { const span = $('detectorVariability').querySelector('span'); if (span) span.textContent = report.detector_variability_notice || detector.detector_variability_notice || 'AI-writing detectors can disagree substantially, especially on formal academic prose. This app combines global and paragraph-level evidence. Use the score as a style-screening indicator, not proof of authorship.'; }
   if ($('disclaimer')) $('disclaimer').textContent = report.disclaimer || '';
 
   if ($('highlightedText')) {
     $('highlightedText').classList.remove('empty-state');
     $('highlightedText').innerHTML = report.highlighted_html || '';
   }
+  if ($('signalColouredText')) {
+    $('signalColouredText').classList.remove('empty-state');
+    $('signalColouredText').innerHTML = report.signal_coloured_html || '';
+  }
   bindSegments();
+  bindSignalColours();
   renderDetector(detector);
+  renderStatistical(report.style_concern_categories || []);
   renderFindings(report.segments || []);
   renderMetrics(report.metrics || {});
 }
@@ -83,6 +93,19 @@ function bindSegments() {
     const show = () => {
       const tip = $('segmentTip');
       if (tip) tip.innerHTML = `<b>${escapeHtml(el.dataset.risk)}% AI-style signal.</b> ${escapeHtml(el.dataset.reasons || '')}`;
+    };
+    el.addEventListener('click', show);
+    el.addEventListener('focus', show);
+  });
+}
+
+function bindSignalColours() {
+  document.querySelectorAll('.signal-text[data-signals]').forEach(el => {
+    const show = () => {
+      const tip = $('signalColourTip');
+      if (!tip) return;
+      const keys = (el.dataset.signals || '').split(',').filter(Boolean);
+      tip.innerHTML = `<b>Signals ${escapeHtml(keys.join(', ') || '—')}.</b> ${escapeHtml(el.dataset.reasons || '')}`;
     };
     el.addEventListener('click', show);
     el.addEventListener('focus', show);
@@ -102,25 +125,28 @@ function renderDetector(detector) {
   const signals = detector?.signals || [];
   if (!signals.length) {
     target.className = 'detector-signals empty-state';
-    target.textContent = 'Run AI detection to see the nine-signal breakdown.';
+    target.textContent = 'Run AI detection to see the A–I forensic breakdown.';
     return;
   }
 
   const header = `
     <section class="detector-summary">
       <div><small>AI signal index</small><strong>${Number(detector.ai_detection_percentage || 0)}%</strong></div>
-      <div><small>Weighted forensic score</small><strong>${Number(detector.overall_score || 0).toFixed(1)} / ${Number(detector.max_score || 27)}</strong></div>
+      <div><small>Weighted A–I score</small><strong>${Number(detector.overall_score || 0).toFixed(1)} / ${Number(detector.max_score || 27)}</strong></div>
       <div><small>Signal level</small><strong>${escapeHtml(detector.signal_level || detector.verdict || '—')}</strong></div>
       <div><small>Confidence</small><strong>${escapeHtml(detector.confidence || '—')}</strong></div>
     </section>`;
 
+  const weights = detector.composite_weights || {};
   const arithmetic = `<section class="score-arithmetic">
-    <b>Score calculation</b>
-    <span>Raw A–I ${Number(detector.raw_category_score ?? 0)}/27</span>
-    <span>Weighted ${Number(detector.weighted_raw_score ?? 0).toFixed(2)}/25.05</span>
-    <span>Scaled ${Number(detector.scaled_score_before_humanness ?? 0).toFixed(2)}/27</span>
-    <span>Humanness −${Number(detector.humanness_counter_score ?? 0)}</span>
-    <span>Net ${Number(detector.overall_score ?? 0).toFixed(1)}/27 = ${Number(detector.ai_detection_percentage ?? 0)}%</span>
+    <b>Four-layer score</b>
+    <span>Forensic A–I ${Number(detector.category_signal_percentage ?? 0)}% × ${Math.round(Number(weights.forensic ?? 0.25) * 100)}%</span>
+    <span>Statistical fingerprint ${Number(detector.statistical_fingerprint_percentage ?? 0)}% × ${Math.round(Number(weights.statistical ?? 0.35) * 100)}%</span>
+    <span>Paragraph profile ${Number(detector.segment_signal_percentage ?? 0)}% × ${Math.round(Number(weights.segments ?? 0.30) * 100)}%</span>
+    <span>Document regularity ${Number(detector.consistency_signal_percentage ?? 0)}% × ${Math.round(Number(weights.document_consistency ?? 0.10) * 100)}%</span>
+    <span>Corroboration bonus +${Number(detector.corroboration_bonus ?? 0)}</span>
+    <span>Composite = ${Number(detector.ai_detection_percentage ?? 0)}%</span>
+    <span>Human-context evidence ${Number(detector.humanness_counter_score ?? 0)} point(s), confidence only</span>
   </section>`;
 
   const cards = signals.map(signal => {
@@ -137,11 +163,37 @@ function renderDetector(detector) {
     </article>`;
   }).join('');
 
+  const segmentProfile = detector.segment_profile || [];
+  const hotspots = [...segmentProfile].sort((a,b)=>Number(b.ai_signal||0)-Number(a.ai_signal||0)).filter(x=>Number(x.ai_signal||0)>0).slice(0,8);
+  const segmentSummary = `<section class="segment-profile-summary">
+    <header><div><h3>Paragraph-level profile</h3><p>${Number(detector.segment_count ?? 0)} prose segments screened. ${Number(detector.flagged_segment_count ?? 0)} reached 20% or more local signal.</p></div><strong>P90 ${Number(detector.segment_p90 ?? 0)}%</strong></header>
+    ${hotspots.length ? `<div class="segment-hotspots">${hotspots.map(item=>`<article><b>Segment ${Number(item.segment||0)} · ${Number(item.ai_signal||0)}%</b><span>${escapeHtml(item.excerpt||'')}</span></article>`).join('')}</div>` : '<p class="no-signal">No paragraph-level hotspot crossed the local display threshold.</p>'}
+  </section>`;
   const notes = (detector.calibration_notes || []).map(note => `<li>${escapeHtml(note)}</li>`).join('');
   const narrative = `<section class="detector-explanation"><h3>What gave it away</h3><p>${escapeHtml(detector.what_gave_it_away || '')}</p><h3>Calibration</h3><ul>${notes}</ul></section>`;
 
   target.className = 'detector-signals';
-  target.innerHTML = header + arithmetic + `<div class="signal-grid">${cards}</div>` + narrative;
+  target.innerHTML = header + arithmetic + segmentSummary + `<div class="signal-grid">${cards}</div>` + narrative;
+}
+
+function renderStatistical(groups) {
+  const target = $('statisticalSignals');
+  if (!target) return;
+  if (!groups?.length) {
+    target.className = 'concern-categories empty-state';
+    target.textContent = 'Run AI detection to inspect the continuous statistical fingerprint.';
+    return;
+  }
+  target.className = 'concern-categories';
+  target.innerHTML = groups.map(group => `
+    <section class="concern-group">
+      <header><div><h3>${escapeHtml(group.group || '')}</h3><p>${escapeHtml(group.description || '')}</p></div><strong>${Number(group.percentage || 0)}%</strong></header>
+      ${(group.metrics || []).map(metric => `<article class="concern-metric">
+        <div class="concern-row"><span>${escapeHtml(metric.label || '')}</span><b>${Number(metric.percentage || 0)}%</b></div>
+        <div class="bar"><i style="width:${Math.max(0,Math.min(100,Number(metric.percentage||0)))}%"></i></div>
+        <ul>${(metric.evidence || []).map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>
+      </article>`).join('')}
+    </section>`).join('');
 }
 
 function renderFindings(segments) {
@@ -173,12 +225,12 @@ function renderMetrics(metrics) {
 async function analyse() {
   const text = $('sourceText')?.value.trim();
   if (!text) return setMessage('Add text before running AI detection.', 'error');
-  busy(true, 'Running nine-signal AI detection…');
+  busy(true, 'Running four-layer AI detection…');
   try {
     const response = await api('/api/analyse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
     updateDashboard(await response.json());
     activateTab('detector');
-    setMessage('AI detection completed. Review the signal breakdown and sentence evidence together.', 'success');
+    setMessage('AI detection completed. Review the A–I breakdown, statistical fingerprint, paragraph profile and signal-coloured text together.', 'success');
   } catch(e) {
     setMessage(e.message,'error');
   } finally {
@@ -205,12 +257,14 @@ async function humanize() {
     const engineNote = data.actual_engine === 'engine1_fallback'
       ? ` Engine 2 was unavailable, so Engine 1 fallback was used. ${data.engine_2?.reason || ''}`
       : data.selected_engine === 'engine2'
-        ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and rewrite-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
-        : ' Engine 1 local rewrite completed without an API call.';
-    const addressed = data.engine_1?.addressed_signals || [];
-    const signalNote = addressed.length ? ` Addressed signal categories: ${addressed.join(', ')}.` : '';
+        ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and writing-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
+        : data.selected_engine === 'engine3'
+          ? ` Engine 3 targeted ${(data.engine_3?.targeted_signals || []).join(', ') || 'no safely editable signal'}; targeted A–I score ${Number(data.engine_3?.targeted_score_before ?? 0)} → ${Number(data.engine_3?.targeted_score_after ?? 0)}.`
+          : ' Engine 1 local rewrite completed without an API call.';
+    const objectives = data.selected_engine === 'engine3' ? (data.engine_3?.targeted_signals || []) : (data.engine_1?.rewrite_objectives || []);
+    const signalNote = objectives.length ? ` Rewrite focus: ${objectives.join(', ')}.` : '';
     const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
-    const aiNote = ` AI signal index ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
+    const aiNote = ` Independent post-rewrite AI audit: ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
     setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
   } catch(e) {
@@ -290,7 +344,7 @@ function syncEngineControls() {
 try {
   const savedEngine = localStorage.getItem('humanizer_engine');
   const savedModel = localStorage.getItem('humanizer_engine2_model');
-  if (engineSelect && ['engine1','engine2'].includes(savedEngine)) engineSelect.value = savedEngine;
+  if (engineSelect && ['engine1','engine2','engine3'].includes(savedEngine)) engineSelect.value = savedEngine;
   if (engine2ModelSelect && ['gpt-5.6-terra','gpt-5.6-luna'].includes(savedModel)) engine2ModelSelect.value = savedModel;
 } catch (_) {}
 
@@ -319,11 +373,20 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('sentenceCount')) $('sentenceCount').textContent='0';
   if ($('activeSignals')) $('activeSignals').textContent='0/9';
   if ($('evidenceCount')) $('evidenceCount').textContent='0';
+  if ($('proseSegments')) $('proseSegments').textContent='0';
+  if ($('flaggedSegments')) $('flaggedSegments').textContent='0';
+  if ($('statisticalFingerprint')) $('statisticalFingerprint').textContent='0%';
+  if ($('engineSignalTarget')) $('engineSignalTarget').textContent='—';
   if ($('highlightedText')) {
     $('highlightedText').textContent='Run AI detection to colour sentences by AI-style signal strength.';
     $('highlightedText').className='document-view empty-state';
   }
+  if ($('signalColouredText')) {
+    $('signalColouredText').textContent='Run AI detection to colour the text by A–I signal family.';
+    $('signalColouredText').className='document-view empty-state';
+  }
   renderDetector({});
+  renderStatistical([]);
   renderFindings([]);
   renderMetrics({});
   activateTab('detector');
