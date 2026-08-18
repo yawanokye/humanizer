@@ -38,7 +38,10 @@ FEATURE_NAMES = (
     "reference_surprisal_mean",
     "reference_surprisal_std",
     "reference_low_surprisal_share",
-    # v2.3 section-aware features. Missing sections resolve to zero.
+    "reference_curvature_abs_mean",
+    "reference_curvature_std",
+    "reference_curvature_regular_share",
+    # section-aware features. Missing sections resolve to zero.
     "section_abstract_mean",
     "section_intro_lit_mean",
     "section_methods_mean",
@@ -183,7 +186,9 @@ def predict_probability_with_model(model: dict[str, Any], features: dict[str, fl
         "model_type": model_type,
         "model_version": model.get("version", "1"),
         "sample_count": int(model.get("sample_count") or 0),
-        "metrics": model.get("validation_metrics") or model.get("metrics") or {},
+        "metrics": model.get("test_metrics") or model.get("validation_metrics") or model.get("metrics") or {},
+        "decision_threshold": float(model.get("decision_threshold") or 0.5),
+        "predicted_class": 1 if probability >= float(model.get("decision_threshold") or 0.5) else 0,
     }
 
 
@@ -281,7 +286,7 @@ def _fit_logistic(data: list[dict[str, Any]], *, epochs: int = 1600, learning_ra
         for j in range(len(weights)):
             weights[j] -= learning_rate * (grad_w[j] / len(matrix) + l2 * weights[j])
     return {
-        "trained": True, "model_type": "logistic", "version": "2.3-logistic-1",
+        "trained": True, "model_type": "logistic", "version": "2.4-logistic-1",
         "sample_count": len(data), "positive_count": positives, "negative_count": len(data) - positives,
         "feature_names": names, "means": means, "scales": scales,
         "weights": {name: weights[i] for i, name in enumerate(names)}, "bias": bias,
@@ -301,7 +306,7 @@ def _fit_gaussian_nb(data: list[dict[str, Any]]) -> dict[str, Any]:
             class_vars[name] = max(1e-3, sum((v - mu) ** 2 for v in vals) / max(1, len(vals)))
         classes[str(klass)] = {"prior": len(rows) / len(matrix), "means": class_means, "variances": class_vars}
     return {
-        "trained": True, "model_type": "gaussian_nb", "version": "2.3-gnb-1",
+        "trained": True, "model_type": "gaussian_nb", "version": "2.4-gnb-1",
         "sample_count": len(data), "positive_count": sum(labels), "negative_count": len(data) - sum(labels),
         "feature_names": names, "means": means, "scales": scales, "classes": classes,
     }
@@ -318,7 +323,7 @@ def _fit_centroid(data: list[dict[str, Any]]) -> dict[str, Any]:
         within_distances.extend(sum((row[i] - center[i]) ** 2 for i in range(len(names))) for row in rows)
     temperature = max(0.5, _mean(within_distances))
     return {
-        "trained": True, "model_type": "nearest_centroid", "version": "2.3-centroid-1",
+        "trained": True, "model_type": "nearest_centroid", "version": "2.4-centroid-1",
         "sample_count": len(data), "positive_count": sum(labels), "negative_count": len(data) - sum(labels),
         "feature_names": names, "means": means, "scales": scales, "centroids": centroids, "temperature": temperature,
     }
@@ -336,7 +341,15 @@ def train_logistic_meta_classifier(rows: Iterable[dict[str, Any]], **kwargs: Any
     return model
 
 
-def _stratified_split(rows: list[dict[str, Any]], validation_fraction: float, seed: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _stratified_three_way_split(
+    rows: list[dict[str, Any]], *, train_fraction: float = 0.60, validation_fraction: float = 0.20, seed: int = 42
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create deterministic stratified train/validation/locked-test partitions.
+
+    The locked test partition is never used for model-family selection or threshold
+    choice. The selected family is refit on train+validation only after selection,
+    then evaluated exactly once on the locked test partition.
+    """
     rng = random.Random(seed)
     by_class = {0: [], 1: []}
     for row in rows:
@@ -344,55 +357,148 @@ def _stratified_split(rows: list[dict[str, Any]], validation_fraction: float, se
             by_class[int(row["label"])].append(row)
     train: list[dict[str, Any]] = []
     valid: list[dict[str, Any]] = []
+    test: list[dict[str, Any]] = []
+    test_fraction = max(0.05, 1.0 - train_fraction - validation_fraction)
     for klass in (0, 1):
         items = list(by_class[klass])
         rng.shuffle(items)
-        n_valid = max(5, round(len(items) * validation_fraction))
-        n_valid = min(n_valid, max(5, len(items) - 15))
-        valid.extend(items[:n_valid])
-        train.extend(items[n_valid:])
-    rng.shuffle(train); rng.shuffle(valid)
-    return train, valid
+        n = len(items)
+        n_test = max(4, round(n * test_fraction))
+        n_valid = max(4, round(n * validation_fraction))
+        # Leave enough observations in training for the lightweight fitters.
+        while n - n_test - n_valid < 8 and (n_test > 3 or n_valid > 3):
+            if n_test >= n_valid and n_test > 3:
+                n_test -= 1
+            elif n_valid > 3:
+                n_valid -= 1
+        test.extend(items[:n_test])
+        valid.extend(items[n_test:n_test + n_valid])
+        train.extend(items[n_test + n_valid:])
+    rng.shuffle(train)
+    rng.shuffle(valid)
+    rng.shuffle(test)
+    return train, valid, test
+
+
+def _threshold_for_max_fpr(labels: list[int], probabilities: list[float], max_fpr: float) -> tuple[float, dict[str, float]]:
+    """Choose the highest-recall threshold that satisfies the human FPR ceiling."""
+    candidates = sorted({0.01, 0.99, *[max(0.01, min(0.99, round(p, 4))) for p in probabilities]})
+    feasible: list[tuple[float, dict[str, float]]] = []
+    for threshold in candidates:
+        metrics = _classification_metrics(labels, probabilities, threshold)
+        if float(metrics.get("false_positive_rate", 1.0)) <= max_fpr:
+            feasible.append((threshold, metrics))
+    if not feasible:
+        threshold = 0.5
+        return threshold, _classification_metrics(labels, probabilities, threshold)
+    # Prioritise recall, F1 and accuracy while staying within the requested FPR.
+    return max(feasible, key=lambda item: (
+        float(item[1].get("recall", 0)),
+        float(item[1].get("f1", 0)),
+        float(item[1].get("accuracy", 0)),
+        item[0],
+    ))
 
 
 def train_best_meta_classifier(
-    rows: Iterable[dict[str, Any]], *, validation_fraction: float = 0.25, seed: int = 42
+    rows: Iterable[dict[str, Any]], *, validation_fraction: float = 0.20, seed: int = 42,
+    max_human_fpr: float | None = None,
 ) -> dict[str, Any]:
     data = [row for row in rows if isinstance(row, dict) and int(row.get("label", -1)) in {0, 1}]
-    # Validate full corpus before split. Held-out model selection needs enough
-    # examples to leave at least 15 per class in the training fold.
     _prepare(data)
     class_counts = {klass: sum(1 for row in data if int(row["label"]) == klass) for klass in (0, 1)}
     if min(class_counts.values()) < 20:
-        raise ValueError("v2.3 held-out model selection requires at least 20 human and 20 AI/AI-edited samples.")
-    train, valid = _stratified_split(data, validation_fraction, seed)
-    if len({int(row["label"]) for row in valid}) < 2:
-        raise ValueError("Held-out split needs both human and AI samples.")
+        raise ValueError("v2.4 locked-test model selection requires at least 20 human and 20 AI/AI-edited samples.")
+
+    validation_fraction = max(0.15, min(0.25, float(validation_fraction)))
+    train_fraction = max(0.50, 1.0 - validation_fraction - 0.20)
+    train, valid, locked_test = _stratified_three_way_split(
+        data, train_fraction=train_fraction, validation_fraction=validation_fraction, seed=seed
+    )
+    if len({int(row["label"]) for row in valid}) < 2 or len({int(row["label"]) for row in locked_test}) < 2:
+        raise ValueError("Validation and locked-test partitions both need human and AI samples.")
+
     fitters = {"logistic": _fit_logistic, "gaussian_nb": _fit_gaussian_nb, "nearest_centroid": _fit_centroid}
     candidates: dict[str, dict[str, float]] = {}
+    fitted: dict[str, dict[str, Any]] = {}
+    valid_labels = [int(row["label"]) for row in valid]
     for name, fitter in fitters.items():
         model = fitter(train)
-        labels = [int(row["label"]) for row in valid]
+        fitted[name] = model
         probs = [float(predict_probability_with_model(model, row.get("features") or {})["probability"]) for row in valid]
-        candidates[name] = _classification_metrics(labels, probs)
+        candidates[name] = _classification_metrics(valid_labels, probs, 0.5)
+
     def rank(item: tuple[str, dict[str, float]]) -> tuple[float, float, float, float]:
-        _name, m = item
-        return (float(m.get("roc_auc", 0)), float(m.get("f1", 0)), -float(m.get("false_positive_rate", 1)), float(m.get("accuracy", 0)))
-    selected_name, selected_metrics = max(candidates.items(), key=rank)
-    final = fitters[selected_name](data)
+        _name, metrics = item
+        return (
+            float(metrics.get("roc_auc", 0)),
+            float(metrics.get("f1", 0)),
+            -float(metrics.get("false_positive_rate", 1)),
+            float(metrics.get("accuracy", 0)),
+        )
+
+    selected_name, _ = max(candidates.items(), key=rank)
+    selected_validation_model = fitted[selected_name]
+    validation_probs = [
+        float(predict_probability_with_model(selected_validation_model, row.get("features") or {})["probability"])
+        for row in valid
+    ]
+    fpr_ceiling = float(max_human_fpr if max_human_fpr is not None else os.getenv("HUMANIZER_MAX_HUMAN_FPR", "0.05"))
+    fpr_ceiling = max(0.0, min(0.50, fpr_ceiling))
+    threshold, threshold_metrics = _threshold_for_max_fpr(valid_labels, validation_probs, fpr_ceiling)
+
+    # Refit only on train+validation. The locked test set remains untouched.
+    final = fitters[selected_name](train + valid)
+    test_labels = [int(row["label"]) for row in locked_test]
+    test_probs = [
+        float(predict_probability_with_model(final, row.get("features") or {})["probability"])
+        for row in locked_test
+    ]
+    test_metrics = _classification_metrics(test_labels, test_probs, threshold)
+
     final.update({
-        "validation_metrics": selected_metrics,
+        "validation_metrics": threshold_metrics,
+        "test_metrics": test_metrics,
         "candidate_metrics": candidates,
-        "selection_method": "stratified held-out comparison by ROC-AUC, F1, false-positive rate and accuracy",
-        "validation_fraction": validation_fraction,
+        "selection_method": "60/20/20 stratified train/validation/locked-test; family selected on validation ROC-AUC/F1/FPR, threshold constrained by human FPR ceiling",
+        "train_count": len(train),
         "validation_count": len(valid),
+        "locked_test_count": len(locked_test),
+        "validation_fraction": validation_fraction,
+        "locked_test_fraction": round(len(locked_test) / len(data), 4),
         "random_seed": seed,
-        "version": f"2.3-{selected_name}-selected",
-        "metrics": selected_metrics,
-        "training_note": "Model family was selected on a stratified held-out split, then refit on the full benchmark. Reported validation metrics remain from the held-out selection split.",
+        "decision_threshold": round(threshold, 6),
+        "max_human_fpr": fpr_ceiling,
+        "version": f"2.4-{selected_name}-locked-test",
+        "metrics": test_metrics,
+        "training_note": "Model family and threshold were chosen without using the locked test set. The final test metrics are from the untouched locked partition.",
     })
     return final
 
+
+def model_feature_importance(model: dict[str, Any] | None = None, limit: int = 15) -> list[dict[str, float]]:
+    active = model or load_model()
+    if not active:
+        return []
+    names = list(active.get("feature_names") or [])
+    kind = str(active.get("model_type") or "logistic")
+    values: dict[str, float] = {}
+    if kind == "logistic":
+        weights = active.get("weights") or {}
+        values = {name: abs(float(weights.get(name, 0.0) or 0.0)) for name in names}
+    elif kind == "gaussian_nb":
+        classes = active.get("classes") or {}
+        c0 = (classes.get("0") or {}).get("means") or {}
+        c1 = (classes.get("1") or {}).get("means") or {}
+        values = {name: abs(float(c1.get(name, 0.0) or 0.0) - float(c0.get(name, 0.0) or 0.0)) for name in names}
+    else:
+        centers = active.get("centroids") or {}
+        c0 = centers.get("0") or {}
+        c1 = centers.get("1") or {}
+        values = {name: abs(float(c1.get(name, 0.0) or 0.0) - float(c0.get(name, 0.0) or 0.0)) for name in names}
+    ordered = sorted(values.items(), key=lambda item: item[1], reverse=True)[:max(1, int(limit))]
+    total = sum(value for _, value in ordered) or 1.0
+    return [{"feature": name, "importance": round(value, 6), "share": round(value / total, 4)} for name, value in ordered]
 
 def save_model(model: dict[str, Any], path: str | Path | None = None) -> Path:
     target = Path(path) if path else _model_path()

@@ -861,6 +861,9 @@ def _calibration_feature_vector(
         "reference_surprisal_mean": float(reference_lm.get("surprisal_mean") or 0),
         "reference_surprisal_std": float(reference_lm.get("surprisal_std") or 0),
         "reference_low_surprisal_share": float(reference_lm.get("low_surprisal_share") or 0) * 100,
+        "reference_curvature_abs_mean": float(reference_lm.get("curvature_abs_mean") or 0),
+        "reference_curvature_std": float(reference_lm.get("curvature_std") or 0),
+        "reference_curvature_regular_share": float(reference_lm.get("curvature_regular_share") or 0) * 100,
     }
     sections = section_profile or {}
     for key in ("abstract", "intro_lit", "methods", "results", "discussion", "conclusion", "other"):
@@ -870,17 +873,16 @@ def _calibration_feature_vector(
 
 
 def _decision_status(ai_signal: int, layers: list[int], *, calibrated: bool) -> tuple[str, str]:
+    """Return a public review status without exposing the detector operating mode."""
     spread = max(layers, default=0) - min(layers, default=0)
     if 40 <= ai_signal <= 60:
-        return "Indeterminate", "The score falls inside the abstention zone; do not force a human/AI conclusion."
+        return "Indeterminate", "The score falls inside the abstention zone; review the highlighted evidence rather than forcing a human/AI conclusion."
     if spread >= 50 and 20 <= ai_signal <= 80:
-        return "Indeterminate", "Detector layers disagree strongly; the document should be reviewed segment by segment."
-    if calibrated:
-        return "Calibrated estimate", "The headline score was produced by the installed labelled meta-classifier."
-    return "Screening estimate", "No trained calibration model is installed; the transparent ensemble is being used."
+        return "Indeterminate", "Independent signal families disagree strongly; review the highlighted sections individually."
+    return "Result available", "Review the highlighted sentence and signal evidence alongside the headline score."
 
 
-def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any]:
+def dashboard_report(text: str, *, use_calibrator: bool = True, include_private: bool = False) -> dict[str, Any]:
     global_report = analyse_scholarly_style(text)
     segments = analyse_segments(text)
 
@@ -899,16 +901,31 @@ def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any
     forensic_pct = int(detector.get("category_signal_percentage", 0))
     paragraph_pct = int(detector.get("segment_signal_percentage", 0))
     regularity_pct = int(detector.get("consistency_signal_percentage", 0))
-    layers = [forensic_pct, statistical_fingerprint, paragraph_pct, regularity_pct]
 
-    # Transparent ensemble remains the safe fallback. A trained calibration model
-    # can replace the headline score, but never silently: the score source is shown.
-    base_ensemble = round(
-        forensic_pct * 0.25
-        + statistical_fingerprint * 0.35
-        + paragraph_pct * 0.30
-        + regularity_pct * 0.10
-    )
+    # v2.4 adds a probability-curvature family when a true local reference LM is
+    # available. The raw curvature proxy is not treated as DetectGPT/Fast-DetectGPT.
+    # It becomes useful primarily after calibration against labelled benchmark data.
+    curvature_available = bool(reference_lm.get("scored")) and "curvature_regular_share" in reference_lm
+    curvature_pct = _percent(float(reference_lm.get("curvature_regular_share") or 0.0) * 100) if curvature_available else 0
+    layers = [forensic_pct, statistical_fingerprint, paragraph_pct, regularity_pct] + ([curvature_pct] if curvature_available else [])
+
+    if curvature_available:
+        base_ensemble = round(
+            forensic_pct * 0.20
+            + statistical_fingerprint * 0.30
+            + paragraph_pct * 0.25
+            + regularity_pct * 0.10
+            + curvature_pct * 0.15
+        )
+        fallback_weights = {"forensic": 0.20, "statistical": 0.30, "segments": 0.25, "document_consistency": 0.10, "probability_curvature": 0.15}
+    else:
+        base_ensemble = round(
+            forensic_pct * 0.25
+            + statistical_fingerprint * 0.35
+            + paragraph_pct * 0.30
+            + regularity_pct * 0.10
+        )
+        fallback_weights = {"forensic": 0.25, "statistical": 0.35, "segments": 0.30, "document_consistency": 0.10}
     corroborating_layers = sum(1 for value in layers if value >= 35)
     corroboration_bonus = 8 if corroborating_layers >= 3 else 4 if corroborating_layers >= 2 else 0
     fallback_signal = max(0, min(100, base_ensemble + corroboration_bonus))
@@ -932,26 +949,34 @@ def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any
     detector["signal_level"] = detector["verdict"]
     detector["statistical_fingerprint_percentage"] = statistical_fingerprint
     detector["statistical_components"] = statistical_components
-    detector["reference_lm"] = reference_lm
-    detector["calibration"] = calibration
-    detector["calibration_prediction"] = meta_prediction
-    detector["calibration_features"] = features
     detector["section_profile"] = section_profile
-    detector["score_source"] = score_source
+    detector["probability_curvature_percentage"] = curvature_pct if curvature_available else None
     detector["decision_status"] = decision_status
     detector["decision_reason"] = decision_reason
-    detector["fallback_ensemble_percentage"] = fallback_signal
-    detector["corroboration_bonus"] = corroboration_bonus
-    detector["corroborating_layers"] = corroborating_layers
-    detector["composite_weights"] = {
-        "forensic": 0.25, "statistical": 0.35, "segments": 0.30, "document_consistency": 0.10
-    }
+    if include_private:
+        detector["reference_lm"] = reference_lm
+        detector["calibration"] = calibration
+        detector["calibration_prediction"] = meta_prediction
+        detector["calibration_features"] = features
+        detector["score_source"] = score_source
+        detector["fallback_ensemble_percentage"] = fallback_signal
+        detector["corroboration_bonus"] = corroboration_bonus
+        detector["corroborating_layers"] = corroborating_layers
+        detector["composite_weights"] = fallback_weights
+    if not include_private:
+        # Keep detector operating mode, ensemble weights and calibration mechanics private.
+        detector.pop("composite_weights", None)
+        detector.pop("score_source", None)
+        detector.pop("fallback_ensemble_percentage", None)
+        detector.pop("corroboration_bonus", None)
+        detector.pop("corroborating_layers", None)
+        detector.pop("calibration_prediction", None)
+        detector.pop("calibration_features", None)
+        detector.pop("reference_lm", None)
+        detector.pop("calibration", None)
+
     detector["calibration_notes"] = [
-        "AI Signal is a style-screening probability/index, not the percentage of words written by AI.",
-        "v2.3 keeps four independent evidence layers and can replace the hand-weighted headline with a held-out-selected labelled meta-classifier.",
-        "If no trained calibration model is installed, the app explicitly reports that it is using the transparent four-layer ensemble.",
-        "Scores from 40% to 60%, or cases with very large layer disagreement, are marked Indeterminate rather than forced into a human/AI conclusion. Section profiles are also exposed to the learned calibrator.",
-        "True reference-LM perplexity and token surprisal are optional. When disabled, local statistical proxies remain active and are labelled as proxies.",
+        "AI Signal is a style-screening index, not the percentage of words written by AI.",
         "Human-context evidence changes confidence only and does not erase AI-style evidence.",
         "Tables, form rows, headings and table punctuation are excluded from prose-style scoring where possible.",
         "Different AI-writing detectors can disagree substantially on the same scholarly passage; use this as a diagnostic aid, not proof of authorship.",
@@ -964,7 +989,7 @@ def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any
     evidence_items = sum(len(signal.get("evidence", []) or []) for signal in detector.get("signals", []))
     flagged_sentence_count = int(detector.get("flagged_sentence_count", 0))
 
-    return {
+    result = {
         "ai_detection_percentage": ai_signal,
         "human_like_style_percentage": human_like_style,
         "ai_detector": detector,
@@ -976,11 +1001,7 @@ def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any
         "ai_signal_breakdown": detector["signals"],
         "decision_status": decision_status,
         "decision_reason": decision_reason,
-        "score_source": score_source,
-        "calibration": calibration,
-        "calibration_features": features,
         "section_profile": section_profile,
-        "reference_lm": reference_lm,
         # Internal/backward-compatible rewrite-quality field. The dashboard does not
         # use this as the complement of AI Signal.
         "naturalness_percentage": naturalness,
@@ -1006,9 +1027,25 @@ def dashboard_report(text: str, *, use_calibrator: bool = True) -> dict[str, Any
         "disclaimer": (
             "AI Signal and Human-like Style are complementary style indicators: Human-like Style = 100 - AI Signal. "
             "AI Signal does not prove authorship. Different detectors may disagree substantially on the same text. "
-            "v2.3 reports whether the score came from a held-out-selected calibration model or the transparent four-layer fallback, "
-            "and it abstains when evidence is ambiguous or internally inconsistent."
+            "The detector abstains when evidence is ambiguous or internally inconsistent."
         ),
         "detector_variability_notice": detector.get("detector_variability_notice", ""),
     }
+    if include_private:
+        result.update({
+            "score_source": score_source,
+            "calibration": calibration,
+            "calibration_features": features,
+            "reference_lm": reference_lm,
+            "probability_curvature_percentage": curvature_pct if curvature_available else None,
+            "detector_layers": {
+                "forensic": forensic_pct,
+                "statistical": statistical_fingerprint,
+                "paragraph": paragraph_pct,
+                "document_regularity": regularity_pct,
+                "probability_curvature": curvature_pct if curvature_available else None,
+            },
+            "fallback_weights": fallback_weights,
+        })
+    return result
 

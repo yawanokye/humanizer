@@ -81,8 +81,8 @@ def build_annotated_docx(text: str, segments: list[dict[str, Any]], title: str =
     document.core_properties.title = title
     document.add_heading(title, level=0)
     document.add_paragraph(
-        "AI signal key: red = high signal, dark yellow = moderate, yellow = low, uncoloured = minimal signal or protected. "
-        "The diagnostic estimates AI-like writing patterns and does not prove authorship."
+        "AI signal key: red = one or more AI-style signals detected, green = no AI-style signal crossed the sentence threshold, "
+        "grey = protected or excluded academic structure. The diagnostic estimates writing patterns and does not prove authorship."
     )
     by_paragraph: dict[int, list[dict[str, Any]]] = {}
     for segment in segments:
@@ -92,12 +92,12 @@ def build_annotated_docx(text: str, segments: list[dict[str, Any]], title: str =
         for segment in by_paragraph[paragraph_index]:
             run = paragraph.add_run(segment["text"])
             band = segment["band"]
-            if band == "high":
+            if band in {"high", "moderate", "low"}:
                 run.font.highlight_color = WD_COLOR_INDEX.RED
-            elif band == "moderate":
-                run.font.highlight_color = WD_COLOR_INDEX.DARK_YELLOW
-            elif band == "low":
-                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            elif band == "natural":
+                run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+            elif band == "protected":
+                run.font.highlight_color = WD_COLOR_INDEX.GRAY_25
             run.font.size = Pt(11)
             paragraph.add_run(" ")
     document.add_page_break()

@@ -12,6 +12,7 @@ import json
 import os
 import statistics
 import uuid
+import shutil
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from services.calibration import (
     predict_probability_with_model,
     save_model,
     train_best_meta_classifier,
+    model_feature_importance,
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -65,18 +67,23 @@ def validation_path() -> Path:
     return benchmark_dir() / "validation_report.json"
 
 
+def registry_dir() -> Path:
+    return benchmark_dir() / "models"
+
+
+def registry_manifest_path() -> Path:
+    return registry_dir() / "registry.json"
+
+
 def developer_token_configured() -> bool:
     return bool(os.getenv("HUMANIZER_DEVELOPER_TOKEN", "").strip())
 
 
 def verify_developer_token(token: str | None) -> bool:
     expected = os.getenv("HUMANIZER_DEVELOPER_TOKEN", "").strip()
-    if not benchmark_enabled():
+    # v2.4 makes developer authentication mandatory whenever the private lab is enabled.
+    if not benchmark_enabled() or not expected:
         return False
-    if not expected:
-        # Explicitly enabling the lab without a token is allowed for local/private
-        # deployments, but the status endpoint calls this out as a warning.
-        return True
     return bool(token) and token == expected
 
 
@@ -183,7 +190,7 @@ def corpus_status() -> dict[str, Any]:
         "by_editing_level": dict(Counter(str(row.get("editing_level") or "unknown") for row in rows)),
         "external_detector_disagreement": _external_disagreement(rows),
         "ready_to_train": len(rows) >= 40 and labels.get(0, 0) >= 20 and labels.get(1, 0) >= 20,
-        "warning": "Benchmark Lab is enabled without a developer token. Use only on a private/local deployment." if benchmark_enabled() and not developer_token_configured() else "",
+        "warning": "Benchmark Lab is enabled but HUMANIZER_DEVELOPER_TOKEN is missing. Developer access is locked until a password is configured." if benchmark_enabled() and not developer_token_configured() else "",
     }
 
 
@@ -193,7 +200,7 @@ def _feature_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     result: list[dict[str, Any]] = []
     for row in rows:
-        report = dashboard_report(str(row["text"]), use_calibrator=False)
+        report = dashboard_report(str(row["text"]), use_calibrator=False, include_private=True)
         result.append({
             "id": row.get("id"),
             "label": int(row["label"]),
@@ -210,6 +217,86 @@ def _feature_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _load_registry_manifest() -> dict[str, Any]:
+    path = registry_manifest_path()
+    if not path.exists():
+        return {"active": None, "previous": None, "models": []}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"active": None, "previous": None, "models": []}
+    return value if isinstance(value, dict) else {"active": None, "previous": None, "models": []}
+
+
+def _save_registry_manifest(value: dict[str, Any]) -> None:
+    path = registry_manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def register_model(model: dict[str, Any]) -> dict[str, Any]:
+    registry_dir().mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    model_id = f"{stamp}-{str(model.get('model_type') or 'model')}-{uuid.uuid4().hex[:8]}"
+    model_path = registry_dir() / f"{model_id}.json"
+    model_path.write_text(json.dumps(model, indent=2, sort_keys=True), encoding="utf-8")
+    manifest = _load_registry_manifest()
+    previous = manifest.get("active")
+    entry = {
+        "id": model_id,
+        "created_at": model.get("trained_at") or datetime.now(UTC).isoformat(),
+        "model_type": model.get("model_type"),
+        "sample_count": int(model.get("sample_count") or 0),
+        "test_metrics": model.get("test_metrics") or {},
+        "validation_metrics": model.get("validation_metrics") or {},
+        "decision_threshold": float(model.get("decision_threshold") or 0.5),
+        "max_human_fpr": float(model.get("max_human_fpr") or 0.05),
+        "path": str(model_path),
+    }
+    models = [entry] + [item for item in (manifest.get("models") or []) if item.get("id") != model_id]
+    manifest = {"active": model_id, "previous": previous, "models": models[:25]}
+    _save_registry_manifest(manifest)
+    return entry
+
+
+def registry_status() -> dict[str, Any]:
+    manifest = _load_registry_manifest()
+    return {
+        "active": manifest.get("active"),
+        "previous": manifest.get("previous"),
+        "models": manifest.get("models") or [],
+    }
+
+
+def promote_model(model_id: str) -> dict[str, Any]:
+    manifest = _load_registry_manifest()
+    match = next((item for item in (manifest.get("models") or []) if item.get("id") == model_id), None)
+    if not match:
+        raise ValueError("Requested model version was not found in the registry.")
+    source = Path(str(match.get("path") or ""))
+    if not source.exists():
+        raise ValueError("The registered model file is missing.")
+    current = manifest.get("active")
+    target = save_model(json.loads(source.read_text(encoding="utf-8")))
+    manifest["previous"] = current if current != model_id else manifest.get("previous")
+    manifest["active"] = model_id
+    _save_registry_manifest(manifest)
+    return {"active": model_id, "model_path": str(target)}
+
+
+def rollback_model() -> dict[str, Any]:
+    manifest = _load_registry_manifest()
+    previous = str(manifest.get("previous") or "").strip()
+    if not previous:
+        raise ValueError("No previous model is available for rollback.")
+    current = manifest.get("active")
+    result = promote_model(previous)
+    manifest = _load_registry_manifest()
+    manifest["previous"] = current
+    _save_registry_manifest(manifest)
+    return result
+
+
 def train_from_benchmark() -> dict[str, Any]:
     rows = load_samples()
     feature_rows = _feature_rows(rows)
@@ -217,20 +304,58 @@ def train_from_benchmark() -> dict[str, Any]:
     model["trained_at"] = datetime.now(UTC).isoformat()
     model["corpus_name"] = corpus_path().name
     target = save_model(model)
+    registry_entry = register_model(model)
     corpus_evaluation = evaluate_model(model, rows)
     validation = {
         **corpus_evaluation,
-        "overall": model.get("validation_metrics") or {},
-        "heldout_selected_metrics": model.get("validation_metrics") or {},
+        "overall": model.get("test_metrics") or {},
+        "locked_test_metrics": model.get("test_metrics") or {},
+        "validation_threshold_metrics": model.get("validation_metrics") or {},
         "corpus_fit_metrics": corpus_evaluation.get("overall") or {},
         "selected_model": model.get("model_type"),
         "candidate_metrics": model.get("candidate_metrics") or {},
+        "decision_threshold": model.get("decision_threshold"),
+        "max_human_fpr": model.get("max_human_fpr"),
+        "split": {"train": model.get("train_count"), "validation": model.get("validation_count"), "locked_test": model.get("locked_test_count")},
+        "feature_importance": model_feature_importance(model),
         "model_path": str(target),
-        "note": "Headline Validation Centre metrics come from the stratified held-out model-selection split. Group breakdowns below are descriptive full-corpus diagnostics and must not be presented as independent held-out performance.",
+        "registry_entry": registry_entry,
+        "note": "Headline Validation Centre metrics come from the untouched locked test partition. Full-corpus group breakdowns are descriptive diagnostics only.",
     }
     validation_path().write_text(json.dumps(validation, indent=2, sort_keys=True), encoding="utf-8")
-    return {"model": model, "validation": validation, "saved": str(target)}
+    return {"model": model, "validation": validation, "saved": str(target), "registry": registry_status()}
 
+
+def drift_status(recent_count: int = 30) -> dict[str, Any]:
+    active = load_model()
+    if not active:
+        return {"available": False, "message": "No trained model is installed."}
+    samples = load_samples()
+    if len(samples) < 10:
+        return {"available": False, "message": "At least 10 benchmark samples are needed for drift screening."}
+    recent = samples[-max(10, min(int(recent_count), len(samples))):]
+    rows = _feature_rows(recent)
+    names = list(active.get("feature_names") or [])
+    means = active.get("means") or {}
+    scales = active.get("scales") or {}
+    shifts: list[dict[str, Any]] = []
+    for name in names:
+        values = [float((row.get("features") or {}).get(name, 0.0) or 0.0) for row in rows]
+        current_mean = statistics.mean(values) if values else 0.0
+        training_mean = float(means.get(name, 0.0) or 0.0)
+        scale = max(1e-6, float(scales.get(name, 1.0) or 1.0))
+        z = abs(current_mean - training_mean) / scale
+        shifts.append({"feature": name, "z_shift": round(z, 3), "recent_mean": round(current_mean, 4), "training_mean": round(training_mean, 4)})
+    shifts.sort(key=lambda item: item["z_shift"], reverse=True)
+    index = round(statistics.mean(item["z_shift"] for item in shifts[:min(10, len(shifts))]), 3) if shifts else 0.0
+    return {
+        "available": True,
+        "recent_samples": len(recent),
+        "drift_index": index,
+        "status": "retraining recommended" if index >= 1.25 else "watch" if index >= 0.75 else "stable",
+        "largest_shifts": shifts[:10],
+        "note": "Drift screening compares recent benchmark feature means with the active model's training distribution. It does not retrain automatically.",
+    }
 
 def _group_metrics(rows: list[dict[str, Any]], probabilities: list[float], key: str) -> dict[str, dict[str, float]]:
     buckets: dict[str, list[tuple[int, float]]] = defaultdict(list)
@@ -268,7 +393,7 @@ def evaluate_model(model: dict[str, Any] | None = None, rows: list[dict[str, Any
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "sample_count": len(samples),
-        "overall": classification_metrics(labels, probabilities),
+        "overall": classification_metrics(labels, probabilities, float(active.get("decision_threshold") or 0.5)),
         "by_provenance": _group_metrics(enriched, probabilities, "provenance"),
         "by_source_family": _group_metrics(enriched, probabilities, "source_family"),
         "by_discipline": _group_metrics(enriched, probabilities, "discipline"),
@@ -276,7 +401,7 @@ def evaluate_model(model: dict[str, Any] | None = None, rows: list[dict[str, Any
         "by_editing_level": _group_metrics(enriched, probabilities, "editing_level"),
         "by_word_count": _group_metrics(enriched, probabilities, "word_band"),
         "external_detector_disagreement": _external_disagreement(samples),
-        "note": "Metrics are valid held-out evidence only when the evaluated samples were not used for training or model selection. The selected-model validation metrics in calibration_status come from v2.3's internal held-out split.",
+        "note": "Metrics are valid held-out evidence only when the evaluated samples were not used for training or model selection. The selected-model validation metrics in calibration_status come from v2.4's locked test partition.",
     }
 
 

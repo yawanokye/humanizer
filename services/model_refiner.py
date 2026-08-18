@@ -59,6 +59,30 @@ class RefinerError(RuntimeError):
     pass
 
 
+ENGINE2_MODEL_ALIASES = {
+    "v1": "gpt-5.6-luna",
+    "v2": "gpt-5.6-terra",
+}
+ENGINE2_MODEL_PUBLIC_LABELS = {
+    "v1": "V1 (Light)",
+    "v2": "V2 (Moderate)",
+}
+
+def resolve_engine2_model(value: str | None, default_model: str) -> tuple[str, str]:
+    """Resolve the public Engine 2 alias without exposing provider model names in the UI/API."""
+    raw = str(value or "").strip()
+    if raw in ENGINE2_MODEL_ALIASES:
+        return ENGINE2_MODEL_ALIASES[raw], raw
+    # Backward compatibility for saved clients from v2.3 and earlier.
+    reverse = {model: alias for alias, model in ENGINE2_MODEL_ALIASES.items()}
+    if raw in reverse:
+        return raw, reverse[raw]
+    if not raw:
+        alias = reverse.get(default_model, "v2")
+        return ENGINE2_MODEL_ALIASES.get(alias, default_model), alias
+    raise RefinerError("Unsupported Engine 2 refinement level.")
+
+
 def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
     cfg = config or RefinerConfig.from_env()
     configured = (
@@ -105,7 +129,7 @@ def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
                 "message": engine_2_message,
             },
         },
-        "message": "Engine 1 local rewrite is active. " + engine_2_message,
+        "message": "Engine availability checked.",
     }
 
 
@@ -207,14 +231,12 @@ def refine_with_model(
     model_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     cfg = config or RefinerConfig.from_env()
-    if model_override and cfg.provider == "openai":
-        allowed_models = {"gpt-5.6-terra", "gpt-5.6-luna"}
-        if model_override not in allowed_models:
-            raise RefinerError(f"Unsupported Engine 2 model: {model_override}")
-        cfg.model = model_override
+    public_level = "v2"
+    if cfg.provider == "openai":
+        cfg.model, public_level = resolve_engine2_model(model_override, cfg.model)
     status = provider_status(cfg)
     if not status["configured"]:
-        return text, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "provider": cfg.provider, "reason": status["engines"]["engine2"]["message"], "batches": []}
+        return text, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level, "reason": "Engine 2 is not available on this deployment.", "batches": []}
 
     batches = build_humanizer_batches(text)
     outputs: list[str] = []
@@ -269,7 +291,6 @@ def refine_with_model(
         "applied": revised != text,
         "engine": "engine2",
         "label": "Engine 2, API rewrite",
-        "provider": cfg.provider,
-        "model": cfg.model,
+        "level": public_level,
         "batches": batch_reports,
     }

@@ -116,6 +116,21 @@ def score_reference_lm(text: str) -> dict[str, Any]:
         for flag in low_flags:
             run = run + 1 if flag else 0
             longest = max(longest, run)
+
+        # v2.4 probability-curvature diagnostic. This is intentionally labelled a
+        # proxy rather than DetectGPT/Fast-DetectGPT: it measures the regularity of
+        # second-order changes in token surprisal from one reference LM. A trained
+        # benchmark may learn from it, but it is never presented as a stand-alone
+        # authorship verdict.
+        first_diff = [surprisals[i] - surprisals[i - 1] for i in range(1, len(surprisals))]
+        second_diff = [first_diff[i] - first_diff[i - 1] for i in range(1, len(first_diff))]
+        curvature_abs_mean = sum(abs(x) for x in second_diff) / max(1, len(second_diff))
+        curvature_variance = sum((x - (sum(second_diff) / max(1, len(second_diff)))) ** 2 for x in second_diff) / max(1, len(second_diff))
+        curvature_std = curvature_variance ** 0.5
+        curvature_regular_share = (
+            sum(1 for x in second_diff if abs(x) <= max(0.25, curvature_abs_mean * 0.5)) / max(1, len(second_diff))
+            if second_diff else 0.0
+        )
         return {
             "enabled": True,
             "available": True,
@@ -131,7 +146,11 @@ def score_reference_lm(text: str) -> dict[str, Any]:
             "surprisal_p90": round(_percentile(surprisals, 0.90), 4),
             "low_surprisal_share": round(sum(low_flags) / len(low_flags), 4),
             "longest_low_surprisal_run": int(longest),
-            "message": "True token probabilities were measured with the configured reference language model. Interpret against a labelled calibration corpus, not as a stand-alone AI verdict.",
+            "curvature_abs_mean": round(curvature_abs_mean, 4),
+            "curvature_std": round(curvature_std, 4),
+            "curvature_regular_share": round(curvature_regular_share, 4),
+            "curvature_mode": "single-reference-lm-proxy",
+            "message": "True token probabilities were measured with the configured reference language model. The curvature fields are a single-model proxy and require benchmark calibration; they are not DetectGPT/Fast-DetectGPT scores.",
         }
     except Exception as exc:
         return {
