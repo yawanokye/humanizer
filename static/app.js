@@ -562,10 +562,10 @@ async function analyse() {
 function delay(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
 
 async function waitForHumanizeJob(jobId) {
-  const deadline = Date.now() + (20 * 60 * 1000);
+  const startedAt = Date.now();
   let transientFailures = 0;
   clearInterval(activityTimer);
-  while (Date.now() < deadline) {
+  while (true) {
     await delay(1200);
     let response;
     try {
@@ -573,19 +573,25 @@ async function waitForHumanizeJob(jobId) {
       transientFailures = 0;
     } catch (error) {
       transientFailures += 1;
-      if (transientFailures <= 4 && /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || error))) {
-        setActivityProgress(Math.min(94, activityProgressValue), 'Connection interrupted briefly. Reconnecting to job…');
-        await delay(1500 * transientFailures);
+      if (transientFailures <= 20 && /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || error))) {
+        setActivityProgress(Math.min(94, activityProgressValue), `Connection interrupted. Reconnecting to the active job (${transientFailures}/20)…`);
+        await delay(Math.min(10000, 1200 * transientFailures));
         continue;
       }
-      throw error;
+      throw new Error('The browser could not reconnect to the active humanization job. The server job may still be running; refresh once connectivity is restored.');
     }
     const job = await response.json();
-    setActivityProgress(Number(job.progress ?? activityProgressValue), job.stage || 'Humanization in progress…');
+    let stage = job.stage || 'Humanization in progress…';
+    const checkpoint = job.checkpoint_summary || {};
+    if (checkpoint.total_batches) {
+      stage = `Humanizing document: ${Number(checkpoint.completed_batches || 0)}/${Number(checkpoint.total_batches)} batches; ${Number(checkpoint.completed_words || 0).toLocaleString()}/${Number(checkpoint.total_words || 0).toLocaleString()} words processed.`;
+    } else if (Date.now() - startedAt > 20 * 60 * 1000 && job.status === 'running') {
+      stage = `${stage} Large-document processing is continuing on the server.`;
+    }
+    setActivityProgress(Number(job.progress ?? activityProgressValue), stage);
     if (job.status === 'completed') return job.result;
     if (job.status === 'failed') throw new Error(job.error || 'Humanization job failed.');
   }
-  throw new Error('Humanization is still running after 20 minutes. Please retry or use a lighter rewrite mode.');
 }
 
 async function humanize() {
