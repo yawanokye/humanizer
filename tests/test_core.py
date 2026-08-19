@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided, validate_humanizer_preservation
+from scholarly_humanizer import build_humanizer_batches, humanize_scholarly_text, humanize_signal_guided, validate_humanizer_preservation
 from services.analyzer import dashboard_report
 from services.document_io import build_docx
 from services.model_refiner import RefinerConfig, provider_status
@@ -657,6 +657,57 @@ The evidence supports continued attention to data quality."""
         self.assertIn("RemoteDisconnected", refiner)
         self.assertIn("fallback_retained", refiner)
         self.assertIn("HUMANIZER_ENGINE2_PARALLELISM", refiner)
+
+
+    def test_v24_long_document_batches_are_section_aware_and_larger(self) -> None:
+        paragraph = " ".join(["This study reports carefully documented evidence about procurement systems and institutional practice."] * 40)
+        text = "\n\n".join([f"{i % 9 + 1}.1 Section {i}\n\n{paragraph}" for i in range(85)])
+        batches = build_humanizer_batches(text, max_words=4200)
+        self.assertGreater(len(text.split()), 39000)
+        self.assertGreaterEqual(len(batches), 8)
+        self.assertLessEqual(len(batches), 12)
+        self.assertTrue(all(int(batch["word_count"]) <= 5000 for batch in batches))
+        self.assertTrue(any(batch.get("context_after") for batch in batches[:-1] if not batch.get("protected")))
+
+    def test_v24_engine3_rewrites_red_segments_and_keeps_green_text(self) -> None:
+        text = (
+            "Moreover, it is important to note that this study aims to contribute to the comprehensive landscape of policy research.\n\n"
+            "The survey included 214 respondents from three universities in 2024 (Adam, 2024)."
+        )
+        before = dashboard_report(text)
+        revised, report = humanize_signal_guided(text, before["ai_detector"], "deep", segments=before["segments"])
+        self.assertTrue(report.get("selective_red_only"))
+        self.assertGreaterEqual(int(report.get("flagged_input_segments") or 0), 1)
+        self.assertIn("The survey included 214 respondents from three universities in 2024 (Adam, 2024).", revised)
+        self.assertNotEqual(revised, text)
+
+    def test_v24_frontend_has_no_twenty_minute_job_failure_deadline(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("Humanization is still running after 20 minutes", js)
+        self.assertIn("checkpoint_summary", js)
+        self.assertIn("words processed", js)
+
+
+    def test_v24_engine2_reports_word_progress_and_checkpoints(self) -> None:
+        from services.model_refiner import refine_with_model
+        text = "\n\n".join(["2.1 Section\n\n" + " ".join(["Scholarly prose explains institutional evidence clearly and carefully."] * 120) for _ in range(8)])
+        checkpoints = []
+        progress = []
+        cfg = RefinerConfig(provider="openai", model="gpt-5.6-terra", base_url="https://example.invalid/v1", api_key="test", timeout_seconds=1)
+        with patch("services.model_refiner._refine_openai", side_effect=lambda batch, config, mode, **kwargs: batch):
+            revised, report = refine_with_model(
+                text, mode="deep", config=cfg, model_override="v2",
+                progress_callback=lambda pct, stage: progress.append((pct, stage)),
+                checkpoint_callback=lambda state: checkpoints.append(state),
+            )
+        self.assertEqual(revised, text)
+        self.assertTrue(report.get("section_aware"))
+        self.assertTrue(report.get("context_continuity"))
+        self.assertTrue(checkpoints)
+        self.assertEqual(checkpoints[-1]["completed_batches"], checkpoints[-1]["total_batches"])
+        self.assertEqual(checkpoints[-1]["completed_words"], checkpoints[-1]["total_words"])
+        self.assertTrue(any("words processed" in stage for _, stage in progress))
 
 
 
