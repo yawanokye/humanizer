@@ -33,7 +33,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.4.2",
+    version="2.4.3",
     description="Private-calibrated, robustness-tested scholarly AI-style screening with locked-test validation, model registry, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -65,6 +65,16 @@ def _update_humanize_job(job_id: str, **changes) -> None:
 
 def _job_progress(job_id: str, progress: int, stage: str) -> None:
     _update_humanize_job(job_id, progress=max(0, min(99, int(progress))), stage=str(stage))
+
+def _job_checkpoint(job_id: str, state: dict) -> None:
+    """Persist completed Engine 2 batch state in the in-process job record.
+
+    The partial manuscript is retained server-side while the job is active so a
+    single failed batch does not discard completed work. Status polling exposes
+    only the compact summary, not the manuscript text.
+    """
+    summary = {key: value for key, value in state.items() if key != "partial_text"}
+    _update_humanize_job(job_id, checkpoint=state, checkpoint_summary=summary)
 
 
 class TextRequest(BaseModel):
@@ -336,8 +346,9 @@ def analyse(payload: TextRequest) -> dict:
     return dashboard_report(text)
 
 
-def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None] | None = None) -> dict:
+def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None] | None = None, checkpoint: Callable[[dict], None] | None = None) -> dict:
     progress = progress or (lambda _progress, _stage: None)
+    checkpoint = checkpoint or (lambda _state: None)
     original = _validate_size(payload.text)
     selected_engine = "engine2" if payload.use_model else payload.engine
     actual_engine = selected_engine
@@ -369,6 +380,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
             original,
             detector=original_dashboard.get("ai_detector", {}),
             mode=payload.mode,
+            segments=original_dashboard.get("segments", []),
         )
 
     elif selected_engine == "engine2":
@@ -392,6 +404,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
                 mode=payload.mode,
                 model_override=payload.engine2_model,
                 progress_callback=lambda pct, stage: progress(38 + int(max(0, min(100, pct)) * 0.34), stage),
+                checkpoint_callback=checkpoint,
             )
         else:
             actual_engine = "engine1_fallback"
@@ -493,7 +506,11 @@ def _run_humanize_job(job_id: str, payload_data: dict) -> None:
     try:
         _update_humanize_job(job_id, status="running", progress=5, stage="Starting humanization…")
         payload = HumanizeRequest(**payload_data)
-        result = _humanize_core(payload, progress=lambda pct, stage: _job_progress(job_id, pct, stage))
+        result = _humanize_core(
+            payload,
+            progress=lambda pct, stage: _job_progress(job_id, pct, stage),
+            checkpoint=lambda state: _job_checkpoint(job_id, state),
+        )
         _update_humanize_job(
             job_id,
             status="completed",
@@ -529,6 +546,8 @@ def start_humanize_job(payload: HumanizeRequest) -> dict:
             "error": None,
             "created_at": now,
             "updated_at": now,
+            "checkpoint": None,
+            "checkpoint_summary": None,
         }
     _HUMANIZE_JOB_EXECUTOR.submit(_run_humanize_job, job_id, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
     return {"job_id": job_id, "status": "queued", "progress": 2, "stage": "Queued for humanization…"}
@@ -541,7 +560,11 @@ def humanize_job_status(job_id: str) -> dict:
         if not job:
             raise HTTPException(status_code=404, detail="Humanization job was not found or has expired.")
         # Return a copy so the worker can update safely after this response is built.
-        return dict(job)
+        # Do not send the partial manuscript on every poll; only compact progress
+        # metadata is public to the active browser job.
+        response = dict(job)
+        response.pop("checkpoint", None)
+        return response
 
 
 @app.post("/api/export/docx")

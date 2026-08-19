@@ -93,11 +93,17 @@ Recommended Render variables for Engine 2:
 
 ```env
 HUMANIZER_TIMEOUT_SECONDS=150
-HUMANIZER_ENGINE2_BATCH_WORDS=1800
-HUMANIZER_ENGINE2_PARALLELISM=2
+HUMANIZER_ENGINE2_BATCH_WORDS=4200
+HUMANIZER_ENGINE2_PARALLELISM=3
+HUMANIZER_ENGINE2_BATCH_RETRIES=2
 HUMANIZER_JOB_WORKERS=1
 HUMANIZER_JOB_TTL_SECONDS=3600
 WEB_CONCURRENCY=1
 ```
 
 Each Engine 2 batch now fails safely back to its unchanged protected text on model timeout, connection reset, or incomplete response. Long documents can process two API batches concurrently by default. For multi-instance production deployments, replace the in-process queue with a shared queue/background worker before increasing `WEB_CONCURRENCY` above 1.
+
+
+### Large manuscript behaviour in v2.4.3
+
+The browser no longer imposes a 20-minute humanization failure deadline. As long as the job endpoint remains active, the circular progress ring continues to show server progress. Engine 2 uses section-aware 3,500-5,000-word semantic batches (default 4,200), up to three concurrent API calls, read-only neighbouring context, per-batch preservation validation and per-batch retries. A 40,000-word manuscript will normally be about 8-12 batches, depending on section boundaries. Engine 3 skips green prose and rewrites only red/flagged segments.

@@ -21,8 +21,10 @@ services:
       - key: HUMANIZER_TIMEOUT_SECONDS
         value: "150"
       - key: HUMANIZER_ENGINE2_BATCH_WORDS
-        value: "1800"
+        value: "4200"
       - key: HUMANIZER_ENGINE2_PARALLELISM
+        value: "3"
+      - key: HUMANIZER_ENGINE2_BATCH_RETRIES
         value: "2"
       - key: HUMANIZER_JOB_WORKERS
         value: "1"

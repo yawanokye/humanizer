@@ -203,3 +203,19 @@ HUMANIZER_MAX_HUMAN_FPR=0.05
 ### v2.4 request resilience
 
 Humanization is submitted as a short-lived job request and the UI polls real server progress. This prevents multi-minute Engine 2 rewrites from depending on one uninterrupted browser HTTP connection. Engine 2 also supports bounded concurrent batches and per-batch safe fallback on model/network failures.
+
+
+## v2.4.3 long-document humanization
+
+Large manuscripts are handled as one user job but internally split at scholarly section and paragraph boundaries. Engine 2 targets roughly 4,200 words per batch (configurable from 2,500 to 5,000), supplies neighbouring prose as read-only context, runs up to three batches concurrently, validates each completed batch, and retries only the failed batch. Progress reports both batches and words processed. Engine 3 rewrites only red/flagged prose and copies green prose unchanged.
+
+Recommended settings:
+
+```env
+HUMANIZER_ENGINE2_BATCH_WORDS=4200
+HUMANIZER_ENGINE2_PARALLELISM=3
+HUMANIZER_ENGINE2_BATCH_RETRIES=2
+HUMANIZER_TIMEOUT_SECONDS=150
+HUMANIZER_JOB_WORKERS=1
+WEB_CONCURRENCY=1
+```

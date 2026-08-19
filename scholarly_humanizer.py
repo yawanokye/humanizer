@@ -942,51 +942,120 @@ def split_scholarly_sections(text: str) -> list[dict[str, Any]]:
     return sections or [{"heading": "", "text": value.strip(), "protected": False, "word_count": _word_count(value)}]
 
 
-def build_humanizer_batches(text: str, *, max_words: int = 2600) -> list[dict[str, Any]]:
-    """Build manageable section batches for model refinement without compressing long chapters."""
-    max_words = max(700, int(max_words or 2600))
+def _split_section_units(section_text: str, *, target_words: int) -> list[str]:
+    """Split an oversized section at real paragraph/line boundaries.
+
+    Extracted DOCX/PDF text sometimes arrives with one paragraph per line and no
+    blank line separators. This helper therefore prefers blank-line paragraphs,
+    but can fall back to line-level prose units. It never cuts through a word or
+    sentence merely to hit a token budget.
+    """
+    value = str(section_text or "")
+    if not value.strip():
+        return []
+    if _word_count(value) <= target_words:
+        return [value.strip()]
+
+    blank_parts = [part.strip() for part in re.split(r"\n\s*\n", value) if part.strip()]
+    if len(blank_parts) > 1:
+        units = blank_parts
+    else:
+        lines = [line.rstrip() for line in value.splitlines() if line.strip()]
+        units = lines if len(lines) > 1 else blank_parts
+
+    # A single extracted paragraph can itself exceed the target. Split only at
+    # sentence boundaries in that exceptional case.
+    expanded: list[str] = []
+    for unit in units:
+        if _word_count(unit) <= target_words:
+            expanded.append(unit)
+            continue
+        sentences = [item.strip() for item in _SENTENCE_RE.split(unit) if item.strip()]
+        current: list[str] = []
+        words = 0
+        for sentence in sentences:
+            sentence_words = _word_count(sentence)
+            if current and words + sentence_words > target_words:
+                expanded.append(" ".join(current).strip())
+                current, words = [], 0
+            current.append(sentence)
+            words += sentence_words
+        if current:
+            expanded.append(" ".join(current).strip())
+    return expanded or [value.strip()]
+
+
+def build_humanizer_batches(text: str, *, max_words: int = 4200) -> list[dict[str, Any]]:
+    """Build section-aware semantic batches for long-document model refinement.
+
+    Adjacent short sections may share a batch, while oversized sections are split
+    only at paragraph/line/sentence boundaries. This keeps the batch count near
+    the configured word target instead of creating one remote request per heading.
+    """
+    max_words = max(2500, min(5000, int(max_words or 4200)))
     sections = split_scholarly_sections(text)
     batches: list[dict[str, Any]] = []
     current: list[str] = []
     current_words = 0
-    current_protected = False
+    current_headings: list[str] = []
 
     def flush() -> None:
-        nonlocal current, current_words, current_protected
+        nonlocal current, current_words, current_headings
         if not current:
             return
-        batch_text = "\n\n".join(part.strip() for part in current if part.strip()).strip()
+        batch_text = "\n\n".join(item for item in current if item.strip()).strip()
         if batch_text:
             batches.append({
                 "text": batch_text,
-                "protected": current_protected,
+                "protected": _is_protected_block(batch_text),
                 "word_count": _word_count(batch_text),
                 "diagnostic": analyse_scholarly_style(batch_text),
+                "section_heading": " | ".join(dict.fromkeys(h for h in current_headings if h)),
             })
-        current = []
-        current_words = 0
-        current_protected = False
+        current, current_words, current_headings = [], 0, []
 
     for section in sections:
         section_text = str(section.get("text") or "").strip()
-        words = int(section.get("word_count") or _word_count(section_text))
+        if not section_text:
+            continue
         protected = bool(section.get("protected"))
+        heading = str(section.get("heading") or "").strip()
         if protected:
             flush()
-            current = [section_text]
-            current_words = words
-            current_protected = True
-            flush()
+            batches.append({
+                "text": section_text, "protected": True,
+                "word_count": _word_count(section_text),
+                "diagnostic": analyse_scholarly_style(section_text),
+                "section_heading": heading,
+            })
             continue
 
-        if current and current_words + words > max_words:
-            flush()
-        current.append(section_text)
-        current_words += words
-        current_protected = False
+        units = _split_section_units(section_text, target_words=max_words)
+        for unit in units:
+            unit_words = _word_count(unit)
+            if current and current_words + unit_words > max_words:
+                flush()
+            current.append(unit)
+            current_words += unit_words
+            if heading:
+                current_headings.append(heading)
     flush()
-    return batches
 
+    # Attach compact read-only neighbour context. It helps a remote editor keep
+    # terminology and voice consistent without allowing it to rewrite adjacent
+    # batches. Protected/reference batches are never used as style context.
+    editable_indexes = [i for i, item in enumerate(batches) if not item.get("protected")]
+    for position, batch_index in enumerate(editable_indexes):
+        prev_text = ""
+        next_text = ""
+        if position > 0:
+            prev_text = str(batches[editable_indexes[position - 1]].get("text") or "")
+        if position + 1 < len(editable_indexes):
+            next_text = str(batches[editable_indexes[position + 1]].get("text") or "")
+        batches[batch_index]["context_before"] = prev_text[-1800:].strip()
+        batches[batch_index]["context_after"] = next_text[:1800].strip()
+        batches[batch_index]["batch_index"] = batch_index
+    return batches
 
 def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], signal_keys: set[str], *, level: str) -> str:
     """Signal-guided local pass used only by Engine 3.
@@ -1063,7 +1132,7 @@ def _engine3_statistical_targets(detector: dict[str, Any]) -> tuple[list[str], s
             mapped.update(families)
     return targets, mapped
 
-def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep") -> tuple[str, dict[str, Any]]:
+def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep", segments: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any]]:
     """Engine 3: identify active forensic signals and target them explicitly.
 
     Unlike Engine 1 this engine is detector-coupled by design. It does not invent
@@ -1082,6 +1151,27 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
     before_style = analyse_scholarly_style(original)
     before_score = int(before_style.get("naturalness_score", 0))
 
+    # v2.4 selective Engine 3: when sentence diagnostics are available, only
+    # prose that actually carries a displayed AI-style signal is eligible for
+    # rewriting. Green/protected text passes through unchanged.
+    flagged_ranges: list[tuple[int, int]] = []
+    if segments:
+        for item in segments:
+            if item.get("protected"):
+                continue
+            risk = int(item.get("risk") or 0)
+            band = str(item.get("band") or "").lower()
+            if risk > 0 and band in {"low", "moderate", "high"}:
+                try:
+                    flagged_ranges.append((int(item.get("start") or 0), int(item.get("end") or 0)))
+                except (TypeError, ValueError):
+                    continue
+
+    def line_is_flagged(start: int, end: int) -> bool:
+        if not flagged_ranges:
+            return segments is None
+        return any(a < end and b > start for a, b in flagged_ranges)
+
     if not original.strip() or not editable:
         report = dict(before_style)
         report.update({
@@ -1089,6 +1179,7 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
             "applied": False, "preservation_passed": True, "preservation_issues": [],
             "score_before": before_score, "score_after": before_score, "naturalness_gain": 0,
             "targeted_signals": editable, "targeted_statistical_metrics": statistical_targets,
+            "flagged_input_segments": len(flagged_ranges), "selective_red_only": segments is not None,
             "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
             "detector_independent": False,
             "reason": "No safely editable A-I signal was active." if active else "No active forensic signal was detected.",
@@ -1111,7 +1202,13 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
         reference_tail = False
         # Preserve the exact line structure so tables and extracted paragraphs are
         # not merged. Each prose line is independently signal-guided.
+        offset = 0
+        rewritten_flagged_blocks = 0
+        skipped_green_blocks = 0
         for line in original.splitlines(keepends=True):
+            line_start = offset
+            line_end = offset + len(line)
+            offset = line_end
             if line.endswith("\r\n"):
                 ending, core = "\r\n", line[:-2]
             elif line.endswith("\n"):
@@ -1121,10 +1218,17 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
             stripped = core.strip()
             if _REFERENCE_HEADING_RE.match(stripped):
                 reference_tail = True
+            is_flagged = line_is_flagged(line_start, line_end)
             if reference_tail or not stripped or _is_protected_line(core):
                 output.append(core + ending)
+            elif segments is not None and not is_flagged:
+                # Green prose stays byte-for-byte unchanged in Engine 3.
+                output.append(core + ending)
+                skipped_green_blocks += 1
             else:
-                output.append(_guided_cleanup_paragraph(core, connector_seen, set(editable), level=level) + ending)
+                revised_core = _guided_cleanup_paragraph(core, connector_seen, set(editable), level=level)
+                output.append(revised_core + ending)
+                rewritten_flagged_blocks += 1
         candidate = "".join(output).strip()
         valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=change_limit)
         if not valid:
@@ -1142,7 +1246,8 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
             "applied": False, "preservation_passed": False,
             "preservation_issues": sorted(set(failures)), "score_before": before_score,
             "score_after": before_score, "naturalness_gain": 0, "targeted_signals": editable,
-            "targeted_statistical_metrics": statistical_targets,
+            "targeted_statistical_metrics": statistical_targets, "flagged_input_segments": len(flagged_ranges),
+            "selective_red_only": segments is not None,
             "diagnostic_only_signals": [k for k in active if k in {"E", "H"}], "detector_independent": False,
             "reason": "No signal-guided candidate passed the scholarly preservation checks.",
         })
@@ -1157,6 +1262,9 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
         "preservation_passed": True, "preservation_issues": [], "score_before": before_score,
         "score_after": after_score, "naturalness_gain": after_score - before_score,
         "targeted_signals": editable, "targeted_statistical_metrics": statistical_targets,
+        "flagged_input_segments": len(flagged_ranges), "selective_red_only": segments is not None,
+        "rewritten_flagged_blocks": rewritten_flagged_blocks if 'rewritten_flagged_blocks' in locals() else 0,
+        "skipped_green_blocks": skipped_green_blocks if 'skipped_green_blocks' in locals() else 0,
         "diagnostic_only_signals": [k for k in active if k in {"E", "H"}],
         "detector_independent": False, "changed_characters": changed_chars,
         "reason": "Rewrite targeted active A-I families plus elevated continuous statistical fingerprints, then passed the scholarly preservation gate.",
