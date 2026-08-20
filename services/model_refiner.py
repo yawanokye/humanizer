@@ -169,6 +169,7 @@ def _system_prompt(mode: str = "balanced") -> str:
         "Do not insert typos, slang, fake uncertainty, invented examples or unsupported claims. "
         "Treat names, emails, dates, numbers, percentages, citations, references, URLs, DOIs, equations, tables, table headers, figure captions, headings, tickers and statistical notation as locked content. "
         "You may rewrite prose around those items, but do not alter, omit, invent, reorder or relabel any locked item. "
+        "When DOCX paragraph markers such as <<<P:12>>> and <<<ENDP:12>>> are present, keep every marker exactly unchanged and in the same order. Do not merge or split marked paragraphs. "
         "Return only the revised passage. Never add analysis or markdown fences.\n\nRules:\n" + rules
     )
 
@@ -378,3 +379,180 @@ def refine_with_model(
         "context_continuity": True,
     }
 
+
+
+_PARAGRAPH_START_RE = __import__("re").compile(r"(?m)^<<<P:(\d+)>>>\s*$")
+_PARAGRAPH_BLOCK_RE = __import__("re").compile(r"(?ms)^<<<P:(\d+)>>>\s*\n(.*?)\n<<<ENDP:\1>>>\s*$")
+
+
+def _encode_paragraph_group(group: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        f"<<<P:{int(item['paragraph_index'])}>>>\n{str(item.get('text') or '').strip()}\n<<<ENDP:{int(item['paragraph_index'])}>>>"
+        for item in group
+    )
+
+
+def _parse_paragraph_group(candidate: str, expected_ids: list[int]) -> dict[int, str] | None:
+    import re
+    pattern = re.compile(r"(?ms)^<<<P:(\d+)>>>\s*\n(.*?)\n<<<ENDP:\1>>>\s*(?=\n\n<<<P:|\Z)")
+    found: list[tuple[int, str]] = [(int(match.group(1)), match.group(2).strip()) for match in pattern.finditer(str(candidate or '').strip())]
+    if [item[0] for item in found] != list(expected_ids):
+        return None
+    return {idx: text for idx, text in found}
+
+
+def refine_paragraphs_with_model(
+    paragraphs: list[dict[str, Any]],
+    *,
+    mode: str = "balanced",
+    config: RefinerConfig | None = None,
+    model_override: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+    checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[dict[int, str], dict[str, Any]]:
+    """Refine a DOCX paragraph map without flattening the Word document.
+
+    Paragraph IDs are sent in 2.5k-5k word groups. The remote model must return
+    the same marker sequence, after which each paragraph is independently passed
+    through the existing evidence-preservation and naturalness gates. Failed
+    paragraphs retain their source text; failed batches do not damage the DOCX.
+    """
+    progress_callback = progress_callback or (lambda _pct, _stage: None)
+    checkpoint_callback = checkpoint_callback or (lambda _state: None)
+    cfg = config or RefinerConfig.from_env()
+    public_level = "v2"
+    if cfg.provider == "openai":
+        cfg.model, public_level = resolve_engine2_model(model_override, cfg.model)
+    status = provider_status(cfg)
+    originals = {int(item["paragraph_index"]): str(item.get("text") or "") for item in paragraphs}
+    if not status["configured"]:
+        return originals, {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level, "reason": "Engine 2 is not available on this deployment.", "batches": []}
+
+    batch_words = max(2500, min(5000, int(os.getenv("HUMANIZER_ENGINE2_BATCH_WORDS", "4200"))))
+    parallelism = max(1, min(4, int(os.getenv("HUMANIZER_ENGINE2_PARALLELISM", "3"))))
+    retries = max(0, min(3, int(os.getenv("HUMANIZER_ENGINE2_BATCH_RETRIES", "2"))))
+    max_ratio = float(humanizer_variation_profile()["model_word_change_limit"])
+
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_words = 0
+    for item in paragraphs:
+        words = max(1, len(str(item.get("text") or "").split()))
+        if current and current_words + words > batch_words:
+            groups.append(current)
+            current, current_words = [], 0
+        current.append(item)
+        current_words += words
+    if current:
+        groups.append(current)
+
+    total_words = sum(max(1, len(text.split())) for text in originals.values())
+    progress_callback(5, f"Preparing {len(groups)} format-preserving paragraph batch(es) for {total_words:,} editable words…")
+
+    def process_group(index: int, group: list[dict[str, Any]]) -> tuple[int, dict[int, str], dict[str, Any]]:
+        encoded = _encode_paragraph_group(group)
+        expected_ids = [int(item["paragraph_index"]) for item in group]
+        context_before = str(group[0].get("context_before") or "") if group else ""
+        context_after = str(group[-1].get("context_after") or "") if group else ""
+        last_error = ""
+        for attempt in range(1, retries + 2):
+            try:
+                kwargs = {"context_before": context_before, "context_after": context_after}
+                if cfg.provider == "ollama":
+                    candidate = _refine_ollama(encoded, cfg, mode, **kwargs)
+                elif cfg.provider == "openai":
+                    candidate = _refine_openai(encoded, cfg, mode, **kwargs)
+                elif cfg.provider == "openai_compatible":
+                    candidate = _refine_openai_compatible(encoded, cfg, mode, **kwargs)
+                else:
+                    raise RefinerError(f"Unsupported provider: {cfg.provider}")
+                parsed = _parse_paragraph_group(candidate, expected_ids)
+                if parsed is None:
+                    last_error = "Paragraph marker sequence changed; the batch was rejected."
+                    if attempt <= retries:
+                        continue
+                    break
+                accepted: dict[int, str] = {}
+                rejected = 0
+                for item in group:
+                    pid = int(item["paragraph_index"])
+                    source_text = originals[pid]
+                    proposed = str(parsed.get(pid, source_text))
+                    paragraph_limit = max(max_ratio, 0.35 if len(source_text.split()) < 120 else max_ratio)
+                    valid, issues = validate_humanizer_preservation(source_text, proposed, max_word_change_ratio=paragraph_limit)
+                    source_score = int(analyse_scholarly_style(source_text).get("naturalness_score", 0))
+                    proposed_score = int(analyse_scholarly_style(proposed).get("naturalness_score", 0)) if valid else source_score
+                    if not valid or proposed_score < source_score:
+                        accepted[pid] = source_text
+                        rejected += 1
+                    else:
+                        accepted[pid] = proposed
+                return index, accepted, {
+                    "index": index,
+                    "applied": any(accepted[pid] != originals[pid] for pid in expected_ids),
+                    "paragraphs": len(group),
+                    "rejected_paragraphs": rejected,
+                    "word_count": sum(max(1, len(originals[pid].split())) for pid in expected_ids),
+                    "attempts": attempt,
+                }
+            except RefinerError as exc:
+                last_error = str(exc)
+            except Exception as exc:
+                last_error = f"Engine 2 format-preserving batch failed safely: {exc}"
+            if attempt <= retries:
+                continue
+        fallback = {pid: originals[pid] for pid in expected_ids}
+        return index, fallback, {
+            "index": index, "applied": False, "paragraphs": len(group),
+            "word_count": sum(max(1, len(originals[pid].split())) for pid in expected_ids),
+            "attempts": retries + 1, "error": last_error or "Batch failed.", "fallback_retained": True,
+        }
+
+    results: dict[int, tuple[dict[int, str], dict[str, Any]]] = {}
+    completed = 0
+    completed_words = 0
+
+    def record(index: int, mapping: dict[int, str], report: dict[str, Any]) -> None:
+        nonlocal completed, completed_words
+        results[index] = (mapping, report)
+        completed += 1
+        completed_words += int(report.get("word_count") or 0)
+        pct = int(8 + (completed_words / max(1, total_words)) * 86)
+        progress_callback(min(94, pct), f"Engine 2: {completed}/{len(groups)} Word batches, {completed_words:,}/{total_words:,} editable words processed…")
+        partial: dict[int, str] = dict(originals)
+        for mapping, _report in results.values():
+            partial.update(mapping)
+        checkpoint_callback({
+            "completed_batches": completed, "total_batches": len(groups),
+            "completed_words": completed_words, "total_words": total_words,
+            "format_preserving_docx": True, "completed_paragraphs": sum(len(mapping) for mapping, _ in results.values()),
+            "partial_paragraphs": partial,
+        })
+
+    if parallelism == 1 or len(groups) <= 1:
+        for index, group in enumerate(groups):
+            idx, mapping, report = process_group(index, group)
+            record(idx, mapping, report)
+    else:
+        with ThreadPoolExecutor(max_workers=min(parallelism, len(groups)), thread_name_prefix="engine2-docx") as pool:
+            future_map = {pool.submit(process_group, index, group): index for index, group in enumerate(groups)}
+            for future in as_completed(future_map):
+                idx, mapping, report = future.result()
+                record(idx, mapping, report)
+
+    revised = dict(originals)
+    batch_reports: list[dict[str, Any]] = []
+    for index in range(len(groups)):
+        mapping, report = results[index]
+        revised.update(mapping)
+        batch_reports.append(report)
+    failures = sum(1 for report in batch_reports if report.get("error") or report.get("fallback_retained"))
+    progress_callback(100, "Engine 2 format-preserving Word refinement finished…")
+    return revised, {
+        "applied": any(revised[key] != originals[key] for key in originals),
+        "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level,
+        "batches": batch_reports, "batch_count": len(batch_reports), "failed_batches": failures,
+        "parallelism": min(parallelism, max(1, len(groups))), "batch_target_words": batch_words,
+        "total_words": total_words, "batch_retries": retries, "section_aware": True,
+        "context_continuity": True, "format_preserving_docx": True,
+    }

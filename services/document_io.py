@@ -10,6 +10,8 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt
 from pypdf import PdfReader
 
+from services.document_structure import inspect_docx
+
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".pdf"}
 
 
@@ -25,14 +27,10 @@ def extract_text(filename: str, content: bytes) -> str:
                 continue
         raise ValueError("The text file encoding could not be read.")
     if suffix == ".docx":
-        document = Document(io.BytesIO(content))
-        blocks: list[str] = []
-        for paragraph in document.paragraphs:
-            blocks.append(paragraph.text)
-        for table in document.tables:
-            for row in table.rows:
-                blocks.append(" | ".join(cell.text.strip() for cell in row.cells))
-        return "\n\n".join(block for block in blocks if block.strip())
+        # Preserve the body order during extraction. The format-preserving
+        # workflow stores the original OOXML package separately and later patches
+        # only safe body paragraphs instead of rebuilding tables/styles from text.
+        return str(inspect_docx(content)["text"])
     reader = PdfReader(io.BytesIO(content))
     pages = [(page.extract_text() or "").strip() for page in reader.pages]
     text = "\n\n".join(page for page in pages if page)
