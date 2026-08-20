@@ -30,6 +30,10 @@ services:
         value: "1"
       - key: HUMANIZER_JOB_TTL_SECONDS
         value: "3600"
+      - key: HUMANIZER_DOCX_FORMAT_PRESERVATION
+        value: "true"
+      - key: HUMANIZER_DOCUMENT_TTL_SECONDS
+        value: "14400"
       - key: HUMANIZER_MAX_INPUT_CHARS
         value: "1200000"
       - key: HUMANIZER_MAX_UPLOAD_BYTES
@@ -44,6 +48,16 @@ services:
         value: "0.18"
       - key: REFERENCE_LM_ENABLED
         value: "false"
+      - key: HUMANIZER_BENCHMARK_LAB_ENABLED
+        value: "false"
+      - key: HUMANIZER_DEVELOPER_TOKEN
+        sync: false
+      - key: HUMANIZER_BENCHMARK_DIR
+        value: /var/data/humanizer-calibration
+      - key: HUMANIZER_CALIBRATION_MODEL
+        value: /var/data/humanizer-calibration/meta_classifier.json
+      - key: HUMANIZER_MAX_HUMAN_FPR
+        value: "0.05"
 
 # Optional v2.4 private Benchmark Lab variables to add in Render dashboard:
 # HUMANIZER_BENCHMARK_LAB_ENABLED=false

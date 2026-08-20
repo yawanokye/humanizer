@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import threading
 import time
 import uuid
@@ -14,7 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided, preservation_certificate
+from scholarly_humanizer import humanize_scholarly_text, humanize_signal_guided, preservation_certificate, validate_humanizer_preservation
 from services.analyzer import dashboard_report
 from services.calibration import calibration_status
 from services.reference_lm import reference_lm_status
@@ -24,7 +25,8 @@ from services.benchmark import (
     promote_model, rollback_model, drift_status,
 )
 from services.document_io import build_annotated_docx, build_docx, extract_text
-from services.model_refiner import provider_status, refine_with_model
+from services.document_structure import inspect_docx, patch_docx, render_structured_text, text_digest, format_preservation_certificate
+from services.model_refiner import provider_status, refine_with_model, refine_paragraphs_with_model
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_INPUT_CHARS = int(os.getenv("HUMANIZER_MAX_INPUT_CHARS", "1200000"))
@@ -33,8 +35,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.4.3",
-    description="Private-calibrated, robustness-tested scholarly AI-style screening with locked-test validation, model registry, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
+    version="2.4.4",
+    description="Format-preserving scholarly humanization and AI-style screening with protected DOCX patching, large-document jobs, private calibration, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -47,6 +49,44 @@ _HUMANIZE_JOB_EXECUTOR = ThreadPoolExecutor(
 _HUMANIZE_JOBS: dict[str, dict] = {}
 _HUMANIZE_JOBS_LOCK = threading.Lock()
 _HUMANIZE_JOB_TTL_SECONDS = max(600, int(os.getenv("HUMANIZER_JOB_TTL_SECONDS", "3600")))
+
+# Uploaded DOCX packages are retained temporarily so a humanized Word export can
+# patch the original OOXML instead of reconstructing the manuscript from plain
+# text. This intentionally follows the single-process deployment used by v2.4.
+_DOCUMENT_STORE: dict[str, dict] = {}
+_DOCUMENT_STORE_LOCK = threading.Lock()
+_DOCUMENT_TTL_SECONDS = max(1800, int(os.getenv("HUMANIZER_DOCUMENT_TTL_SECONDS", "14400")))
+_DOCX_FORMAT_PRESERVATION = os.getenv("HUMANIZER_DOCX_FORMAT_PRESERVATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+def _clean_document_store() -> None:
+    cutoff = time.time() - _DOCUMENT_TTL_SECONDS
+    with _DOCUMENT_STORE_LOCK:
+        stale = [doc_id for doc_id, item in _DOCUMENT_STORE.items() if float(item.get("updated_at", 0)) < cutoff]
+        for doc_id in stale:
+            _DOCUMENT_STORE.pop(doc_id, None)
+
+def _get_document(document_id: str | None) -> dict | None:
+    if not document_id:
+        return None
+    _clean_document_store()
+    with _DOCUMENT_STORE_LOCK:
+        item = _DOCUMENT_STORE.get(str(document_id))
+        if item is not None:
+            item["updated_at"] = time.time()
+        return item
+
+def _store_humanized_document(document_id: str, job_id: str, content: bytes, certificate: dict) -> None:
+    with _DOCUMENT_STORE_LOCK:
+        item = _DOCUMENT_STORE.get(document_id)
+        if item is None:
+            return
+        outputs = item.setdefault("humanized_outputs", {})
+        outputs[job_id] = {"content": content, "certificate": certificate, "created_at": time.time()}
+        # Keep only the newest few exports per uploaded manuscript.
+        if len(outputs) > 4:
+            for old_job in sorted(outputs, key=lambda key: float(outputs[key].get("created_at", 0)))[:-4]:
+                outputs.pop(old_job, None)
+        item["updated_at"] = time.time()
 
 def _clean_humanize_jobs() -> None:
     cutoff = time.time() - _HUMANIZE_JOB_TTL_SECONDS
@@ -73,7 +113,7 @@ def _job_checkpoint(job_id: str, state: dict) -> None:
     single failed batch does not discard completed work. Status polling exposes
     only the compact summary, not the manuscript text.
     """
-    summary = {key: value for key, value in state.items() if key != "partial_text"}
+    summary = {key: value for key, value in state.items() if key not in {"partial_text", "partial_paragraphs"}}
     _update_humanize_job(job_id, checkpoint=state, checkpoint_summary=summary)
 
 
@@ -85,6 +125,7 @@ class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
     engine: Literal["engine1", "engine2", "engine3"] = "engine1"
     engine2_model: Literal["v1", "v2", "gpt-5.6-terra", "gpt-5.6-luna"] = "v2"
+    document_id: str | None = None
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
 
@@ -92,6 +133,8 @@ class HumanizeRequest(TextRequest):
 class ExportRequest(TextRequest):
     title: str = "Scholarly Humanized Text"
     annotated: bool = False
+    document_id: str | None = None
+    humanize_job_id: str | None = None
 
 
 class BenchmarkSampleRequest(TextRequest):
@@ -327,16 +370,49 @@ def adversarial_audit(payload: AdversarialAuditRequest, x_developer_token: str |
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)) -> dict:
     content = await _read_upload_limited(file)
+    filename = file.filename or "upload.txt"
+    suffix = Path(filename).suffix.lower()
+    document_id: str | None = None
+    format_info: dict | None = None
     try:
-        text = extract_text(file.filename or "upload.txt", content)
+        if suffix == ".docx" and _DOCX_FORMAT_PRESERVATION:
+            structure = inspect_docx(content)
+            text = str(structure["text"])
+            document_id = uuid.uuid4().hex
+            now = time.time()
+            with _DOCUMENT_STORE_LOCK:
+                _DOCUMENT_STORE[document_id] = {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "content": content,
+                    "structure": structure,
+                    "text": text,
+                    "source_digest": structure.get("source_digest") or text_digest(text),
+                    "humanized_outputs": {},
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            format_info = {
+                "available": True,
+                "mode": "patch_original_docx",
+                "paragraphs": int(structure.get("paragraph_count") or 0),
+                "editable_paragraphs": int(structure.get("editable_paragraphs") or 0),
+                "locked_paragraphs": int(structure.get("locked_paragraphs") or 0),
+                "tables": int(structure.get("table_count") or 0),
+                "locked_reason_counts": structure.get("locked_reason_counts") or {},
+            }
+        else:
+            text = extract_text(filename, content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     text = _validate_size(text)
     return {
-        "filename": file.filename or "upload",
+        "filename": filename,
         "text": text,
         "characters": len(text),
         "words": len(text.split()),
+        "document_id": document_id,
+        "format_preservation": format_info or {"available": False, "mode": "text_export"},
     }
 
 
@@ -497,20 +573,253 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
     }
 
 
+
+def _structured_paragraph_items(structure: dict) -> list[dict]:
+    editable = [dict(item) for item in structure.get("paragraphs", []) if item.get("editable") and int(item.get("word_count") or 0) >= 6]
+    for position, item in enumerate(editable):
+        before = str(editable[position - 1].get("text") or "") if position > 0 else ""
+        after = str(editable[position + 1].get("text") or "") if position + 1 < len(editable) else ""
+        item["context_before"] = before[-1200:]
+        item["context_after"] = after[:1200]
+    return editable
+
+
+def _merge_document_preservation(text_certificate: dict, word_certificate: dict) -> dict:
+    checks = dict(text_certificate.get("checks") or {})
+    checks.update(word_certificate.get("checks") or {})
+    return {
+        "passed": bool(text_certificate.get("passed")) and bool(word_certificate.get("passed")),
+        "checks": checks,
+        "changed_word_ratio": text_certificate.get("changed_word_ratio", 0),
+        "changed_paragraphs": word_certificate.get("changed_paragraphs", 0),
+        "locked_paragraphs": word_certificate.get("locked_paragraphs", 0),
+        "note": "Protected scholarly evidence passed together with the Word-format preservation audit. The exported DOCX is patched into the original Word package rather than rebuilt from extracted text.",
+    }
+
+
+def _humanize_structured_docx(
+    payload: HumanizeRequest,
+    document: dict,
+    *,
+    job_id: str,
+    progress: Callable[[int, str], None] | None = None,
+    checkpoint: Callable[[dict], None] | None = None,
+) -> dict:
+    """Humanize only safe top-level Word paragraphs and patch the original DOCX.
+
+    Tables, captions, headings, references, fields, hyperlinks, equations, mixed
+    inline formatting, headers, footers, section settings and media stay in the
+    original OOXML package. This prevents the format damage caused by the former
+    extract-text → rebuild-DOCX workflow.
+    """
+    progress = progress or (lambda _pct, _stage: None)
+    checkpoint = checkpoint or (lambda _state: None)
+    structure = document["structure"]
+    original = str(document["text"])
+    submitted = _validate_size(payload.text)
+    if text_digest(submitted) != str(document.get("source_digest") or text_digest(original)):
+        raise HTTPException(
+            status_code=409,
+            detail="The Source text was edited after the DOCX was uploaded. Re-upload the Word file before humanizing if you want format-preserving Word export.",
+        )
+
+    selected_engine = "engine2" if payload.use_model else payload.engine
+    actual_engine = selected_engine
+    progress(7, "Reading original Word structure…")
+    original_dashboard = dashboard_report(original)
+    items = _structured_paragraph_items(structure)
+    originals = {int(item["paragraph_index"]): str(item.get("text") or "") for item in items}
+    replacements = dict(originals)
+    total = max(1, len(items))
+    progress(16, f"Locked Word structure preserved. {len(items)} prose paragraph(s) are eligible for editing…")
+
+    engine1_report = {"applied": False, "engine": "engine1", "label": "Engine 1, Local rewrite", "reason": "Engine 1 was not selected.", "format_preserving_docx": True}
+    engine2_report = {"applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "reason": "Engine 2 was not selected.", "format_preserving_docx": True}
+    engine3_report = {"applied": False, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite", "reason": "Engine 3 was not selected.", "format_preserving_docx": True}
+
+    if selected_engine == "engine1":
+        changed = 0
+        for pos, item in enumerate(items, start=1):
+            pid = int(item["paragraph_index"])
+            source_text = originals[pid]
+            candidate, _report = humanize_scholarly_text(source_text, mode=payload.mode)
+            local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
+            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit)
+            if valid:
+                replacements[pid] = candidate
+                changed += int(candidate != source_text)
+            if pos == total or pos % max(1, total // 12) == 0:
+                progress(18 + int((pos / total) * 50), f"Engine 1: {pos}/{total} Word paragraphs processed…")
+        engine1_report = {
+            "applied": changed > 0, "engine": "engine1", "label": "Engine 1, Local rewrite",
+            "format_preserving_docx": True, "eligible_paragraphs": len(items), "changed_paragraphs": changed,
+            "locked_paragraphs": int(structure.get("locked_paragraphs") or 0),
+        }
+
+    elif selected_engine == "engine3":
+        changed = 0
+        targeted: set[str] = set()
+        for pos, item in enumerate(items, start=1):
+            pid = int(item["paragraph_index"])
+            source_text = originals[pid]
+            local_dashboard = dashboard_report(source_text)
+            candidate, local_report = humanize_signal_guided(
+                source_text,
+                detector=local_dashboard.get("ai_detector", {}),
+                mode=payload.mode,
+                segments=local_dashboard.get("segments", []),
+            )
+            local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
+            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit)
+            if valid:
+                replacements[pid] = candidate
+                changed += int(candidate != source_text)
+            targeted.update(local_report.get("targeted_signals") or [])
+            if pos == total or pos % max(1, total // 12) == 0:
+                progress(18 + int((pos / total) * 50), f"Engine 3: {pos}/{total} eligible Word paragraphs screened and rewritten where signalled…")
+        engine3_report = {
+            "applied": changed > 0, "engine": "engine3", "label": "Engine 3, Signal-Guided rewrite",
+            "format_preserving_docx": True, "eligible_paragraphs": len(items), "changed_paragraphs": changed,
+            "locked_paragraphs": int(structure.get("locked_paragraphs") or 0), "targeted_signals": sorted(targeted),
+        }
+
+    elif selected_engine == "engine2":
+        progress(20, "Preparing safe Word paragraphs for Engine 2…")
+        seed_items: list[dict] = []
+        local_changed = 0
+        for item in items:
+            pid = int(item["paragraph_index"])
+            source_text = originals[pid]
+            local_candidate, _local_report = humanize_scholarly_text(source_text, mode=payload.mode)
+            local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
+            valid, _issues = validate_humanizer_preservation(source_text, local_candidate, max_word_change_ratio=local_limit)
+            text_for_api = local_candidate if valid else source_text
+            local_changed += int(text_for_api != source_text)
+            seed_items.append({**item, "text": text_for_api})
+        engine1_report = {
+            "applied": local_changed > 0, "engine": "engine1", "label": "Engine 1, Local preparation",
+            "format_preserving_docx": True, "eligible_paragraphs": len(items), "changed_paragraphs": local_changed,
+        }
+        status = provider_status()
+        if not status.get("configured") or payload.mode == "light":
+            actual_engine = "engine1_fallback"
+            replacements = {int(item["paragraph_index"]): str(item["text"]) for item in seed_items}
+            engine2_report = {
+                "applied": False, "engine": "engine2", "label": "Engine 2, API rewrite", "format_preserving_docx": True,
+                "reason": "Engine 2 is not available for this request. The protected local preparation was retained.", "fallback_used": True,
+            }
+        else:
+            replacements, engine2_report = refine_paragraphs_with_model(
+                seed_items,
+                mode=payload.mode,
+                model_override=payload.engine2_model,
+                progress_callback=lambda pct, stage: progress(24 + int(max(0, min(100, pct)) * 0.48), stage),
+                checkpoint_callback=checkpoint,
+            )
+
+    progress(75, "Reassembling revised prose into the original Word structure…")
+    revised = render_structured_text(structure, replacements)
+    revised_dashboard = dashboard_report(revised)
+    before_naturalness = int(original_dashboard.get("naturalness_percentage", 0))
+    after_naturalness = int(revised_dashboard.get("naturalness_percentage", 0))
+    before_ai_signal = int(original_dashboard.get("ai_detection_percentage", 0))
+    after_ai_signal = int(revised_dashboard.get("ai_detection_percentage", 0))
+
+    # Keep the original Word package if the final document-level writing-quality
+    # check worsens. Paragraph-level preservation already guards factual content.
+    if after_naturalness < before_naturalness:
+        replacements = dict(originals)
+        revised = original
+        revised_dashboard = original_dashboard
+        after_naturalness = before_naturalness
+        after_ai_signal = before_ai_signal
+        actual_engine = "none"
+        if selected_engine == "engine1":
+            engine1_report = {**engine1_report, "applied": False, "reason": "Rewrites were discarded because the document-level writing-quality profile worsened."}
+        elif selected_engine == "engine2":
+            engine2_report = {**engine2_report, "applied": False, "reason": "Rewrites were discarded because the document-level writing-quality profile worsened."}
+        else:
+            engine3_report = {**engine3_report, "applied": False, "reason": "Rewrites were discarded because the document-level writing-quality profile worsened."}
+
+    progress(84, "Patching original DOCX paragraphs without rebuilding tables or layout…")
+    changed_replacements = {pid: value for pid, value in replacements.items() if value != originals.get(pid, value)}
+    patched = patch_docx(document["content"], structure, changed_replacements)
+    word_certificate = format_preservation_certificate(
+        document["content"], patched,
+        changed_paragraphs=len(changed_replacements),
+        locked_paragraphs=int(structure.get("locked_paragraphs") or 0),
+    )
+    text_certificate = preservation_certificate(original, revised)
+    combined_certificate = _merge_document_preservation(text_certificate, word_certificate)
+    if not combined_certificate["passed"]:
+        raise RuntimeError("Word structure preservation audit failed. Export was blocked and the original DOCX was left unchanged.")
+
+    progress(91, "Running independent post-rewrite audit…")
+    _store_humanized_document(str(document["document_id"]), job_id, patched, combined_certificate)
+    after_human_like = 100 - after_ai_signal
+    before_human_like = 100 - before_ai_signal
+    progress(97, "Format-preserving Word document is ready…")
+
+    return {
+        "selected_engine": selected_engine,
+        "actual_engine": actual_engine,
+        "selected_engine2_model": ({"gpt-5.6-luna": "v1", "gpt-5.6-terra": "v2"}.get(payload.engine2_model, payload.engine2_model)) if selected_engine == "engine2" else None,
+        "changed": revised != original,
+        "text": revised,
+        "report": revised_dashboard,
+        "original_report": original_dashboard,
+        "preservation_certificate": combined_certificate,
+        "format_preservation_certificate": word_certificate,
+        "format_preserving_export": True,
+        "document_id": str(document["document_id"]),
+        "humanize_job_id": job_id,
+        "document_structure": {
+            "paragraphs": int(structure.get("paragraph_count") or 0),
+            "tables": int(structure.get("table_count") or 0),
+            "editable_paragraphs": int(structure.get("editable_paragraphs") or 0),
+            "locked_paragraphs": int(structure.get("locked_paragraphs") or 0),
+            "changed_paragraphs": len(changed_replacements),
+        },
+        "naturalness_improvement": {"before": before_naturalness, "after": after_naturalness, "gain": after_naturalness - before_naturalness},
+        "ai_signal_improvement": {"before": before_ai_signal, "after": after_ai_signal, "reduction": before_ai_signal - after_ai_signal},
+        "human_like_style_improvement": {"before": before_human_like, "after": after_human_like, "gain": after_human_like - before_human_like},
+        "engine_1": engine1_report,
+        "engine_2": engine2_report,
+        "engine_3": engine3_report,
+        "local_humanizer": engine1_report,
+        "model_refiner": engine2_report,
+    }
+
 @app.post("/api/humanize")
 def humanize(payload: HumanizeRequest) -> dict:
     """Backward-compatible synchronous endpoint. The v2.4 UI uses jobs below."""
+    document = _get_document(payload.document_id)
+    if payload.document_id and document is None:
+        raise HTTPException(status_code=404, detail="The uploaded Word document has expired. Re-upload it before format-preserving humanization.")
+    if document is not None:
+        sync_id = "sync-" + uuid.uuid4().hex
+        return _humanize_structured_docx(payload, document, job_id=sync_id)
     return _humanize_core(payload)
 
 def _run_humanize_job(job_id: str, payload_data: dict) -> None:
     try:
         _update_humanize_job(job_id, status="running", progress=5, stage="Starting humanization…")
         payload = HumanizeRequest(**payload_data)
-        result = _humanize_core(
-            payload,
-            progress=lambda pct, stage: _job_progress(job_id, pct, stage),
-            checkpoint=lambda state: _job_checkpoint(job_id, state),
-        )
+        document = _get_document(payload.document_id)
+        if payload.document_id and document is None:
+            raise RuntimeError("The uploaded Word document has expired. Re-upload it before format-preserving humanization.")
+        if document is not None:
+            result = _humanize_structured_docx(
+                payload, document, job_id=job_id,
+                progress=lambda pct, stage: _job_progress(job_id, pct, stage),
+                checkpoint=lambda state: _job_checkpoint(job_id, state),
+            )
+        else:
+            result = _humanize_core(
+                payload,
+                progress=lambda pct, stage: _job_progress(job_id, pct, stage),
+                checkpoint=lambda state: _job_checkpoint(job_id, state),
+            )
         _update_humanize_job(
             job_id,
             status="completed",
@@ -570,13 +879,27 @@ def humanize_job_status(job_id: str) -> dict:
 @app.post("/api/export/docx")
 def export_docx(payload: ExportRequest) -> Response:
     text = _validate_size(payload.text)
-    if payload.annotated:
+    filename = "scholarly_humanized_text.docx"
+    if not payload.annotated and payload.document_id and payload.humanize_job_id:
+        document = _get_document(payload.document_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="The original Word upload has expired. Re-upload and humanize it again for format-preserving export.")
+        output = (document.get("humanized_outputs") or {}).get(payload.humanize_job_id)
+        if output is None:
+            raise HTTPException(status_code=404, detail="The format-preserving Word output for this humanization job is no longer available.")
+        certificate = output.get("certificate") or {}
+        if not certificate.get("passed"):
+            raise HTTPException(status_code=409, detail="Word format preservation audit did not pass, so export was blocked.")
+        content = bytes(output["content"])
+        stem = Path(str(document.get("filename") or "manuscript.docx")).stem
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "manuscript"
+        filename = f"{safe_stem}_humanized.docx"
+    elif payload.annotated:
         report = dashboard_report(text)
         content = build_annotated_docx(text, report["segments"], payload.title)
         filename = "ai_signal_diagnostic.docx"
     else:
         content = build_docx(text, payload.title)
-        filename = "scholarly_humanized_text.docx"
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

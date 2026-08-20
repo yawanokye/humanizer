@@ -219,3 +219,23 @@ HUMANIZER_TIMEOUT_SECONDS=150
 HUMANIZER_JOB_WORKERS=1
 WEB_CONCURRENCY=1
 ```
+
+## v2.4.4 format-preserving DOCX humanization
+
+DOCX uploads now remain the master document. The application builds an OOXML
+structure map, extracts a readable copy to Source text, rewrites only safe body
+paragraphs, and patches accepted revisions back into `word/document.xml`.
+Tables, headings, captions, equations, fields, hyperlinks, mixed-format runs,
+references, appendices, headers, footers, section settings, media, styles and
+numbering are not reconstructed from plain text.
+
+When a DOCX was uploaded, `Export humanized text to Word` returns a patched copy
+of the original manuscript. A structural certificate compares tables, rows,
+cells, sections, drawings/media, equations, fields/hyperlinks, headers/footers,
+page breaks, styles, numbering and note parts before export. Export is blocked
+if the structural audit fails.
+
+If Source text is manually edited after DOCX extraction, re-upload the DOCX
+before humanization to re-establish the paragraph map. Pasted text, TXT, MD and
+PDF inputs still use text-based Word export because there is no editable source
+Word package to preserve.

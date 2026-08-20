@@ -107,3 +107,36 @@ Each Engine 2 batch now fails safely back to its unchanged protected text on mod
 ### Large manuscript behaviour in v2.4.3
 
 The browser no longer imposes a 20-minute humanization failure deadline. As long as the job endpoint remains active, the circular progress ring continues to show server progress. Engine 2 uses section-aware 3,500-5,000-word semantic batches (default 4,200), up to three concurrent API calls, read-only neighbouring context, per-batch preservation validation and per-batch retries. A 40,000-word manuscript will normally be about 8-12 batches, depending on section boundaries. Engine 3 skips green prose and rewrites only red/flagged segments.
+
+## v2.4.4 recommended environment
+
+Use the previous long-document settings together with the format-preserving
+DOCX settings:
+
+```env
+HUMANIZER_TIMEOUT_SECONDS=150
+HUMANIZER_ENGINE2_BATCH_WORDS=4200
+HUMANIZER_ENGINE2_PARALLELISM=3
+HUMANIZER_ENGINE2_BATCH_RETRIES=2
+HUMANIZER_JOB_WORKERS=1
+HUMANIZER_JOB_TTL_SECONDS=3600
+WEB_CONCURRENCY=1
+
+HUMANIZER_DOCX_FORMAT_PRESERVATION=true
+HUMANIZER_DOCUMENT_TTL_SECONDS=14400
+```
+
+Private Benchmark Lab settings remain:
+
+```env
+HUMANIZER_BENCHMARK_LAB_ENABLED=true
+HUMANIZER_DEVELOPER_TOKEN=<strong-private-password>
+HUMANIZER_BENCHMARK_DIR=/var/data/humanizer-calibration
+HUMANIZER_CALIBRATION_MODEL=/var/data/humanizer-calibration/meta_classifier.json
+HUMANIZER_MAX_HUMAN_FPR=0.05
+```
+
+The Benchmark Lab and detector operating/calibration details remain private.
+A persistent disk mounted at `/var/data` is recommended for benchmark/model
+persistence. The temporary uploaded-DOCX store is deliberately process-local in
+v2.4.4, so `WEB_CONCURRENCY=1` remains recommended.
