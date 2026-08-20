@@ -1,5 +1,8 @@
 const $ = (id) => document.getElementById(id);
 let currentReport = null;
+let currentDocumentId = null;
+let currentHumanizeJobId = null;
+let currentFormatPreservation = null;
 
 function setMessage(text, kind = '') {
   const el = $('message');
@@ -600,11 +603,13 @@ async function humanize() {
   busy(true, 'Applying protected scholarly refinement…');
   startActivity('humanize', 'Humanize scholarly text', 'Submitting protected rewrite job…');
   try {
-    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2'})});
+    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2',document_id:currentDocumentId})});
     const started = await startResponse.json();
     if (!started.job_id) throw new Error('Humanization job could not be started.');
     setActivityProgress(Number(started.progress ?? 2), started.stage || 'Queued for humanization…');
     const data = await waitForHumanizeJob(started.job_id);
+    currentHumanizeJobId = data.humanize_job_id || started.job_id || null;
+    if (data.document_id) currentDocumentId = data.document_id;
     if ($('revisedText')) $('revisedText').value=data.text;
     const aiImprovement = data.ai_signal_improvement || {};
     const humanLikeImprovement = data.human_like_style_improvement || {
@@ -628,7 +633,10 @@ async function humanize() {
     const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
     const aiNote = ` Independent post-rewrite AI audit: ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
-    setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}`, data.changed ? 'success' : '');
+    const formatNote = data.format_preserving_export
+      ? ` Word format preservation passed. ${Number(data.document_structure?.tables||0)} table(s) and the original document structure remain intact; ${Number(data.document_structure?.changed_paragraphs||0)} prose paragraph(s) were patched in place.`
+      : '';
+    setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}${formatNote}`, data.changed ? 'success' : '');
     completeActivity(data.changed ? 'Humanization completed' : 'Completed with no safe changes');
   } catch(e) {
     setMessage(e.message,'error');
@@ -655,8 +663,14 @@ async function uploadFile(file) {
     }
     if ($('revisedText')) $('revisedText').value='';
     currentReport=null;
+    currentDocumentId = data.document_id || null;
+    currentHumanizeJobId = null;
+    currentFormatPreservation = data.format_preservation || null;
     activateTab('detector');
-    setMessage(`${data.filename || file.name} extracted to Source text. Click Detect AI when ready.`, 'success');
+    const formatNote = data.format_preservation?.available
+      ? ` Format-preserving Word mode is active: ${Number(data.format_preservation.tables||0)} table(s) and ${Number(data.format_preservation.locked_paragraphs||0)} structurally sensitive paragraph(s) will remain in the original DOCX package.`
+      : '';
+    setMessage(`${data.filename || file.name} extracted to Source text. Click Detect AI when ready.${formatNote}`, 'success');
     completeActivity('Text extracted to Source text');
   } catch(e) {
     setMessage(`Upload failed: ${e.message}`,'error');
@@ -703,11 +717,13 @@ async function exportHumanizedWord() {
   busy(true, 'Preparing Word export…');
   startActivity('export', 'Export humanized Word', 'Preparing revised text…');
   try {
-    const response=await api('/api/export/docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'',annotated:false})});
+    const response=await api('/api/export/docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'',annotated:false,document_id:currentDocumentId,humanize_job_id:currentHumanizeJobId})});
     const blob=await response.blob();
     const link=document.createElement('a');
     link.href=URL.createObjectURL(blob);
-    link.download='humanized_scholarly_text.docx';
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    link.download = filenameMatch ? filenameMatch[1] : 'humanized_scholarly_text.docx';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -763,6 +779,9 @@ $('clearBtn')?.addEventListener('click',()=>{
   if ($('sourceText')) $('sourceText').value='';
   if ($('revisedText')) $('revisedText').value='';
   currentReport=null;
+  currentDocumentId=null;
+  currentHumanizeJobId=null;
+  currentFormatPreservation=null;
   if ($('aiScore')) $('aiScore').textContent='—';
   if ($('humanLikeScore')) $('humanLikeScore').textContent='—';
   if ($('humanLikeGain')) $('humanLikeGain').textContent='';
