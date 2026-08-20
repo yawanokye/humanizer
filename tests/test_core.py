@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import unittest
 from pathlib import Path
+
+from docx import Document
 from unittest.mock import patch
 
 from scholarly_humanizer import build_humanizer_batches, humanize_scholarly_text, humanize_signal_guided, validate_humanizer_preservation
 from services.analyzer import dashboard_report
 from services.document_io import build_docx
+from services.document_structure import inspect_docx, patch_docx, format_preservation_certificate
 from services.model_refiner import RefinerConfig, provider_status
 
 
@@ -91,8 +95,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.4.2', html)
-        self.assertIn('/static/style.css?v=2.4.2', html)
+        self.assertIn('/static/app.js?v=2.4.4', html)
+        self.assertIn('/static/style.css?v=2.4.4', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -709,6 +713,64 @@ The evidence supports continued attention to data quality."""
         self.assertEqual(checkpoints[-1]["completed_words"], checkpoints[-1]["total_words"])
         self.assertTrue(any("words processed" in stage for _, stage in progress))
 
+
+
+    def test_v244_docx_structure_map_keeps_tables_in_body_order(self) -> None:
+        buffer = io.BytesIO()
+        document = Document()
+        document.add_paragraph("Paragraph before the table contains enough ordinary scholarly prose to be safely edited without changing structure.")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Asset"
+        table.cell(0, 1).text = "Weight"
+        table.cell(1, 0).text = "TSLA"
+        table.cell(1, 1).text = "15%"
+        document.add_paragraph("Paragraph after the table also contains enough ordinary prose to remain an editable Word paragraph.")
+        document.save(buffer)
+        structure = inspect_docx(buffer.getvalue())
+        self.assertEqual(structure["table_count"], 1)
+        text = structure["text"]
+        self.assertLess(text.index("Paragraph before"), text.index("Asset\tWeight"))
+        self.assertLess(text.index("Asset\tWeight"), text.index("Paragraph after"))
+
+    def test_v244_docx_patch_preserves_tables_headers_and_mixed_formatting(self) -> None:
+        buffer = io.BytesIO()
+        document = Document()
+        document.sections[0].header.paragraphs[0].text = "CONFIDENTIAL HEADER"
+        document.add_heading("1. Introduction", level=1)
+        document.add_paragraph("This ordinary paragraph contains sufficiently long scholarly prose and should be eligible for safe format-preserving rewriting.")
+        mixed = document.add_paragraph()
+        mixed.add_run("Mixed formatting ").bold = True
+        mixed.add_run("must remain locked and unchanged in the source Word document.")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Measure"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "Completeness"
+        table.cell(1, 1).text = "15.4%"
+        document.save(buffer)
+        original = buffer.getvalue()
+        structure = inspect_docx(original)
+        editable = [item for item in structure["paragraphs"] if item["editable"]]
+        self.assertEqual(len(editable), 1)
+        patched = patch_docx(original, structure, {int(editable[0]["paragraph_index"]): "The revised paragraph now uses different wording while keeping the original Word package, styles and surrounding objects intact."})
+        certificate = format_preservation_certificate(original, patched, changed_paragraphs=1, locked_paragraphs=structure["locked_paragraphs"])
+        self.assertTrue(certificate["passed"], certificate)
+        reopened = Document(io.BytesIO(patched))
+        self.assertEqual(reopened.sections[0].header.paragraphs[0].text, "CONFIDENTIAL HEADER")
+        self.assertEqual(reopened.tables[0].cell(1, 1).text, "15.4%")
+        mixed_after = reopened.paragraphs[2]
+        self.assertTrue(mixed_after.runs[0].bold)
+        self.assertEqual(mixed_after.text, "Mixed formatting must remain locked and unchanged in the source Word document.")
+
+    def test_v244_frontend_passes_document_id_and_job_id_for_word_export(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        js = (root / "static" / "app.js").read_text(encoding="utf-8")
+        app_text = (root / "app.py").read_text(encoding="utf-8")
+        self.assertIn("currentDocumentId", js)
+        self.assertIn("document_id:currentDocumentId", js)
+        self.assertIn("humanize_job_id:currentHumanizeJobId", js)
+        self.assertIn("format_preserving_export", app_text)
+        self.assertIn("patch_docx", app_text)
+        self.assertIn("Word structure preservation audit failed", app_text)
 
 
 if __name__ == "__main__":
