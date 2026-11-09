@@ -95,8 +95,8 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.5.0', html)
-        self.assertIn('/static/style.css?v=2.5.0', html)
+        self.assertIn('/static/app.js?v=2.6.0', html)
+        self.assertIn('/static/style.css?v=2.6.0', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
 
@@ -131,7 +131,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('<h2>AI Detector</h2>', html)
+        self.assertIn('aria-label="Style analysis summary"', html)
         self.assertIn('id="aiScore"', html)
         self.assertIn('id="humanLikeScore"', html)
         self.assertNotIn('>Naturalness<', html)
@@ -640,7 +640,7 @@ The evidence supports continued attention to data quality."""
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('Export humanized text to Word (.docx)', html)
+        self.assertIn('Download Word</button>', html)
         self.assertIn('extracted to Source text. Click Detect AI when ready.', js)
         self.assertIn('function exportHumanizedWord()', js)
 
@@ -767,7 +767,7 @@ The evidence supports continued attention to data quality."""
         app_text = (root / "app.py").read_text(encoding="utf-8")
         self.assertIn("currentDocumentId", js)
         self.assertIn("document_id:currentDocumentId", js)
-        self.assertIn("humanize_job_id:currentHumanizeJobId", js)
+        self.assertIn("humanize_job_id:preserveLayout ? resultJobId : null", js)
         self.assertIn("format_preserving_export", app_text)
         self.assertIn("patch_docx", app_text)
         self.assertIn("Word structure preservation audit failed", app_text)

@@ -3,6 +3,42 @@ let currentReport = null;
 let currentDocumentId = null;
 let currentHumanizeJobId = null;
 let currentFormatPreservation = null;
+let lastGeneratedText = '';
+let lastHumanizedSource = '';
+let sourceReport = null;
+let resultReport = null;
+let resultDocumentId = null;
+let resultJobId = null;
+
+function wordCount(text) { return String(text || '').trim().split(/\s+/).filter(Boolean).length; }
+function refreshEditorMeta() {
+  const source = $('sourceText')?.value || '';
+  const result = $('revisedText')?.value || '';
+  if ($('sourceWordCount')) $('sourceWordCount').textContent = `${wordCount(source).toLocaleString()} words`;
+  if ($('resultWordCount')) $('resultWordCount').textContent = `${wordCount(result).toLocaleString()} words`;
+  ['copyBtn','docxBtn','useResultBtn','analyseResultBtn'].forEach(id => { if ($(id)) $(id).disabled = !result.trim(); });
+}
+function scoreLabel(report) {
+  return report && report.score_available !== false ? `AI signal ${Number(report.ai_detection_percentage)}%` : 'Not analysed';
+}
+function setScoreContext(label, report) {
+  if ($('scoreContext')) $('scoreContext').textContent = label;
+  if ($('compactReviewStatus')) $('compactReviewStatus').textContent = report?.sufficient_prose === false ? 'Provisional · short sample' : report?.decision_status || 'Ready to analyse';
+}
+function protectedTerms() {
+  return [...new Set(($('preserveTerms')?.value || '').split(/[,\n]/).map(term => term.trim()).filter(Boolean))];
+}
+function markAnalysisStale() {
+  currentReport = null;
+  if ($('aiScore')) $('aiScore').textContent='—';
+  if ($('humanLikeScore')) $('humanLikeScore').textContent='—';
+  if ($('aiScoreBar')) $('aiScoreBar').style.width='0%';
+  if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width='0%';
+  if ($('aiGain')) $('aiGain').textContent='';
+  if ($('humanLikeGain')) $('humanLikeGain').textContent='';
+  if ($('compactReviewStatus')) $('compactReviewStatus').textContent='Text changed · analyse again';
+  if ($('scoreCoverage')) $('scoreCoverage').textContent='Analyse the current text to refresh these scores.';
+}
 
 function setMessage(text, kind = '') {
   const el = $('message');
@@ -14,7 +50,8 @@ function setMessage(text, kind = '') {
 const requestControlIds = [
   'analyseBtn','humanizeBtn','fileInput','docxBtn','annotatedDocxBtn','htmlBtn',
   'addBenchmarkBtn','refreshBenchmarkBtn','trainBenchmarkBtn','evaluateBenchmarkBtn',
-  'adversarialAuditBtn','driftBtn','rollbackModelBtn','developerAccessBtn'
+  'adversarialAuditBtn','driftBtn','rollbackModelBtn','developerAccessBtn',
+  'clearBtn','copyBtn','useResultBtn','analyseResultBtn','mode','engine','engine2Model','preserveTerms'
 ];
 
 function busy(state, text = 'Working…') {
@@ -23,6 +60,8 @@ function busy(state, text = 'Working…') {
     if (el) el.disabled = state;
   });
   document.querySelectorAll('.promote-model').forEach(el => { el.disabled = state; });
+  ['sourceText','revisedText'].forEach(id => { if ($(id)) $(id).readOnly = state; });
+  if (!state) refreshEditorMeta();
   if (state) setMessage(text);
 }
 
@@ -550,16 +589,21 @@ function renderMetrics(metrics) {
   target.innerHTML = entries.map(([k,v]) => `<div class="metric-card"><b>${escapeHtml(String(v))}</b><span>${escapeHtml(labelize(k))}</span></div>`).join('');
 }
 
-async function analyse() {
-  const text = $('sourceText')?.value.trim();
+async function analyse(target = 'source') {
+  const isResult = target === 'result';
+  const text = $(isResult ? 'revisedText' : 'sourceText')?.value.trim();
   if (!text) return setMessage('Add text before running AI detection.', 'error');
   busy(true, 'Running multi-layer AI detection…');
   startActivity('detect', 'Detect AI', 'Preparing text for detection…');
   try {
     const response = await api('/api/analyse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    updateDashboard(await response.json());
+    const report = await response.json();
+    updateDashboard(report);
+    setScoreContext(isResult ? 'Humanised analysis' : 'Source analysis', report);
+    if (isResult) { resultReport = report; if ($('resultScore')) $('resultScore').textContent = scoreLabel(report); }
+    else { sourceReport = report; if ($('sourceScore')) $('sourceScore').textContent = scoreLabel(report); }
     activateTab('highlight');
-    setMessage('AI detection completed. Red areas contain detected AI-style signals; green areas contain no sentence-level signal. Grey areas are protected or excluded structure.', 'success');
+    setMessage('Analysis complete. Open Detailed analysis for sentence evidence and the signal map.', 'success');
     completeActivity('AI detection completed');
   } catch(e) {
     setMessage(e.message,'error');
@@ -610,14 +654,22 @@ async function humanize() {
   busy(true, 'Applying protected scholarly refinement…');
   startActivity('humanize', 'Humanize scholarly text', 'Submitting protected rewrite job…');
   try {
-    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2',document_id:currentDocumentId})});
+    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2',document_id:currentDocumentId,preserve_terms:protectedTerms()})});
     const started = await startResponse.json();
     if (!started.job_id) throw new Error('Humanization job could not be started.');
     setActivityProgress(Number(started.progress ?? 2), started.stage || 'Queued for humanization…');
     const data = await waitForHumanizeJob(started.job_id);
     currentHumanizeJobId = data.humanize_job_id || started.job_id || null;
     if (data.document_id) currentDocumentId = data.document_id;
+    resultDocumentId = data.document_id || null;
+    resultJobId = data.humanize_job_id || started.job_id || null;
     if ($('revisedText')) $('revisedText').value=data.text;
+    lastGeneratedText = data.text;
+    lastHumanizedSource = text;
+    sourceReport = data.original_report;
+    resultReport = data.report;
+    if ($('sourceScore')) $('sourceScore').textContent = scoreLabel(sourceReport);
+    if ($('resultScore')) $('resultScore').textContent = scoreLabel(resultReport);
     const aiImprovement = data.ai_signal_improvement || {};
     const humanLikeImprovement = data.human_like_style_improvement || {
       before: 100 - Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0),
@@ -625,25 +677,16 @@ async function humanize() {
       gain: Number(aiImprovement.reduction ?? 0),
     };
     updateDashboard(data.report, {humanLike: humanLikeImprovement, ai: aiImprovement});
+    setScoreContext('Humanised analysis', data.report);
     renderPreservation(data.preservation_certificate || null);
+    if ($('preservationStatus')) $('preservationStatus').textContent = data.preservation_certificate?.passed ? 'Content checks passed' : 'Review changes';
+    if ($('outputFormatHint')) $('outputFormatHint').textContent = data.format_preserving_export ? 'Original Word layout preserved.' : 'Review the revision before downloading.';
+    refreshEditorMeta();
     renderRewriteAudit(data);
     activateTab('revised');
-    const engineNote = data.actual_engine === 'engine1_fallback'
-      ? ` Engine 2 was unavailable, so Engine 1 fallback was used. ${data.engine_2?.reason || ''}`
-      : data.selected_engine === 'engine2'
-        ? (data.engine_2?.applied ? ' Engine 2 API rewrite passed preservation and writing-quality checks.' : ` ${data.engine_2?.reason || 'Engine 2 did not apply changes.'}`)
-        : data.selected_engine === 'engine3'
-          ? ` Engine 3 targeted ${(data.engine_3?.targeted_signals || []).join(', ') || 'no safely editable signal'}; targeted A–I score ${Number(data.engine_3?.targeted_score_before ?? 0)} → ${Number(data.engine_3?.targeted_score_after ?? 0)}.${(data.engine_3?.targeted_statistical_metrics || []).length ? ` Statistical targets: ${(data.engine_3.targeted_statistical_metrics || []).join(', ')}.` : ''}`
-          : ' Engine 1 local rewrite completed without an API call.';
-    const objectives = data.selected_engine === 'engine3' ? (data.engine_3?.targeted_signals || []) : (data.engine_1?.rewrite_objectives || []);
-    const signalNote = objectives.length ? ` Rewrite focus: ${objectives.join(', ')}.` : '';
-    const humanLikeNote = ` Human-like style ${Number(humanLikeImprovement.before ?? 0)}% → ${Number(humanLikeImprovement.after ?? 0)}%.`;
-    const aiNote = ` Independent post-rewrite AI audit: ${Number(aiImprovement.before ?? data.original_report?.ai_detection_percentage ?? 0)}% → ${Number(aiImprovement.after ?? data.report?.ai_detection_percentage ?? 0)}%.`;
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
-    const formatNote = data.format_preserving_export
-      ? ` Word format preservation passed. ${Number(data.document_structure?.tables||0)} table(s) and the original document structure remain intact; ${Number(data.document_structure?.changed_paragraphs||0)} prose paragraph(s) were patched in place.`
-      : '';
-    setMessage(`${outcome}${engineNote}${signalNote}${aiNote}${humanLikeNote}${formatNote}`, data.changed ? 'success' : '');
+    const editorLabel = data.actual_engine === 'engine1_fallback' ? ' Local editor used because contextual AI is not configured.' : data.selected_engine === 'engine3' ? ' Focused style edit completed.' : data.selected_engine === 'engine2' ? ' Contextual AI edit completed.' : ' Local edit completed.';
+    setMessage(`${outcome}${editorLabel}${data.format_preserving_export ? ' Word layout preserved.' : ''} Review both versions side by side.`, data.changed ? 'success' : '');
     completeActivity(data.changed ? 'Humanization completed' : 'Completed with no safe changes');
   } catch(e) {
     setMessage(e.message,'error');
@@ -670,9 +713,20 @@ async function uploadFile(file) {
     }
     if ($('revisedText')) $('revisedText').value='';
     currentReport=null;
+    lastGeneratedText=''; lastHumanizedSource=''; sourceReport=null; resultReport=null;
+    resultDocumentId=null; resultJobId=null;
+    markAnalysisStale();
+    setScoreContext('Source analysis', null);
+    renderPreservation(null);
+    if ($('preservationStatus')) $('preservationStatus').textContent='Protected editing';
+    if ($('outputFormatHint')) $('outputFormatHint').textContent='Numbers, citations and document structure are checked.';
     currentDocumentId = data.document_id || null;
     currentHumanizeJobId = null;
     currentFormatPreservation = data.format_preservation || null;
+    if ($('sourceFormatHint')) $('sourceFormatHint').textContent = data.format_preservation?.available ? 'Word layout retained' : data.filename || file.name;
+    if ($('sourceScore')) $('sourceScore').textContent='Not analysed';
+    if ($('resultScore')) $('resultScore').textContent='Awaiting revision';
+    refreshEditorMeta();
     activateTab('detector');
     const formatNote = data.format_preservation?.available
       ? ` Format-preserving Word mode is active: ${Number(data.format_preservation.tables||0)} table(s) and ${Number(data.format_preservation.locked_paragraphs||0)} structurally sensitive paragraph(s) will remain in the original DOCX package.`
@@ -689,6 +743,7 @@ async function uploadFile(file) {
 }
 
 function activateTab(name) {
+  if (name === 'revised') { $('revisedText')?.focus({preventScroll:true}); return; }
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   const panel = $(`${name}Panel`);
@@ -724,7 +779,8 @@ async function exportHumanizedWord() {
   busy(true, 'Preparing Word export…');
   startActivity('export', 'Export humanized Word', 'Preparing revised text…');
   try {
-    const response=await api('/api/export/docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'',annotated:false,document_id:currentDocumentId,humanize_job_id:currentHumanizeJobId})});
+    const preserveLayout = Boolean(resultDocumentId && resultJobId && text === lastGeneratedText.trim());
+    const response=await api('/api/export/docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,title:'',annotated:false,document_id:preserveLayout ? resultDocumentId : null,humanize_job_id:preserveLayout ? resultJobId : null})});
     const blob=await response.blob();
     const link=document.createElement('a');
     link.href=URL.createObjectURL(blob);
@@ -759,8 +815,8 @@ function syncEngineControls() {
   const hint = $('engine2Hint');
   if (hint && usingEngine2) {
     hint.textContent = engine2Configured
-      ? 'Choose V1 (Light) for lighter API refinement or V2 (Moderate) for stronger API refinement.'
-      : 'Engine 2 is not enabled on this deployment. Ask the administrator to configure API rewriting.';
+      ? 'V1 for light refinement. V2 for a stronger contextual edit.'
+      : 'Contextual AI is not configured. The local editor will be used.';
   }
   try {
     if (engineSelect) localStorage.setItem('humanizer_engine', engineSelect.value);
@@ -789,6 +845,15 @@ $('clearBtn')?.addEventListener('click',()=>{
   currentDocumentId=null;
   currentHumanizeJobId=null;
   currentFormatPreservation=null;
+  lastGeneratedText=''; lastHumanizedSource=''; sourceReport=null; resultReport=null;
+  resultDocumentId=null; resultJobId=null;
+  if ($('sourceScore')) $('sourceScore').textContent='Not analysed';
+  if ($('resultScore')) $('resultScore').textContent='Awaiting revision';
+  if ($('scoreCoverage')) $('scoreCoverage').textContent='Analyse your text to see assessed-word coverage.';
+  if ($('sourceFormatHint')) $('sourceFormatHint').textContent='TXT · MD · DOCX · PDF';
+  if ($('preservationStatus')) $('preservationStatus').textContent='Protected editing';
+  if ($('outputFormatHint')) $('outputFormatHint').textContent='Numbers, citations and document structure are checked.';
+  setScoreContext('Source analysis', null);
   if ($('aiScore')) $('aiScore').textContent='—';
   if ($('humanLikeScore')) $('humanLikeScore').textContent='—';
   if ($('humanLikeGain')) $('humanLikeGain').textContent='';
@@ -826,6 +891,7 @@ $('clearBtn')?.addEventListener('click',()=>{
   renderMetrics({});
   activateTab('detector');
   setMessage('Workspace cleared.');
+  refreshEditorMeta();
 });
 $('copyBtn')?.addEventListener('click',async()=>{
   const text=$('revisedText')?.value||$('sourceText')?.value||'';
@@ -891,12 +957,48 @@ fetch('/api/status').then(r=>r.json()).then(data=>{
   const opt = $('engine2Option');
   if (opt) {
     opt.disabled = false;
-    opt.textContent = 'Engine 2, API rewrite';
+    opt.textContent = 'Contextual AI editor';
   }
   syncEngineControls();
+  if ($('engineStatus')) $('engineStatus').textContent = engine2Configured ? 'Contextual AI ready' : 'Local editors ready';
 }).catch(()=>{
   engine2Configured = false;
   const opt = $('engine2Option');
-  if (opt) { opt.disabled = false; opt.textContent='Engine 2, API rewrite'; }
+  if (opt) { opt.disabled = false; opt.textContent='Contextual AI editor'; }
   syncEngineControls();
+  if ($('engineStatus')) $('engineStatus').textContent='Local editors ready';
 });
+
+$('sourceText')?.addEventListener('input', () => {
+  markAnalysisStale();
+  if ($('scoreContext')) $('scoreContext').textContent='Source analysis';
+  sourceReport = null;
+  currentDocumentId = null; currentHumanizeJobId = null; currentFormatPreservation = null;
+  if ($('sourceScore')) $('sourceScore').textContent='Not analysed';
+  if ($('sourceFormatHint')) $('sourceFormatHint').textContent='Text editing mode';
+  if (lastHumanizedSource && $('sourceText').value.trim() !== lastHumanizedSource && $('resultScore')) $('resultScore').textContent='Previous source revision';
+  refreshEditorMeta();
+});
+$('revisedText')?.addEventListener('input', () => {
+  const edited = $('revisedText').value !== lastGeneratedText;
+  if (edited) {
+    markAnalysisStale();
+    if ($('scoreContext')) $('scoreContext').textContent='Humanised analysis';
+    resultReport = null;
+    if ($('resultScore')) $('resultScore').textContent='Edited · analyse again';
+    if ($('preservationStatus')) $('preservationStatus').textContent='Manual edits';
+    if ($('outputFormatHint')) $('outputFormatHint').textContent='Manual edits download as a new Word file.';
+    renderPreservation(null);
+  }
+  refreshEditorMeta();
+});
+$('analyseResultBtn')?.addEventListener('click', () => analyse('result'));
+$('useResultBtn')?.addEventListener('click', () => {
+  const text = $('revisedText')?.value || '';
+  if (!text.trim()) return;
+  $('sourceText').value = text;
+  $('sourceText').dispatchEvent(new Event('input'));
+  setMessage('The revision is now your source. You can refine it again.', 'success');
+  $('sourceText').focus();
+});
+refreshEditorMeta();

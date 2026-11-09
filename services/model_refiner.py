@@ -259,6 +259,7 @@ def refine_with_model(
     model_override: str | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
     checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+    preserve_terms: list[str] | tuple[str, ...] = (),
 ) -> tuple[str, dict[str, Any]]:
     """Run Engine 2 as a resumable, section-aware protected batch job.
 
@@ -300,7 +301,7 @@ def refine_with_model(
         for attempt in range(1, retries + 2):
             try:
                 kwargs = {
-                    "context_before": str(batch.get("context_before") or ""),
+                    "context_before": ("PROTECTED TERMS, preserve exact spelling and occurrence counts: " + json.dumps(list(preserve_terms)) + "\n\n" if preserve_terms else "") + str(batch.get("context_before") or ""),
                     "context_after": str(batch.get("context_after") or ""),
                 }
                 if cfg.provider == "ollama":
@@ -311,7 +312,7 @@ def refine_with_model(
                     candidate = _refine_openai_compatible(batch_text, cfg, mode, **kwargs)
                 else:
                     raise RefinerError(f"Unsupported provider: {cfg.provider}")
-                valid, issues = validate_humanizer_preservation(batch_text, candidate, max_word_change_ratio=max_ratio)
+                valid, issues = validate_humanizer_preservation(batch_text, candidate, max_word_change_ratio=max_ratio, preserve_terms=preserve_terms)
                 if not valid:
                     last_error = "Preservation check failed: " + ", ".join(issues)
                     if attempt <= retries:
@@ -423,6 +424,7 @@ def refine_paragraphs_with_model(
     model_override: str | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
     checkpoint_callback: Callable[[dict[str, Any]], None] | None = None,
+    preserve_terms: list[str] | tuple[str, ...] = (),
 ) -> tuple[dict[int, str], dict[str, Any]]:
     """Refine a DOCX paragraph map without flattening the Word document.
 
@@ -481,7 +483,7 @@ def refine_paragraphs_with_model(
         last_error = ""
         for attempt in range(1, retries + 2):
             try:
-                kwargs = {"context_before": context_before, "context_after": context_after}
+                kwargs = {"context_before": ("PROTECTED TERMS, preserve exact spelling and occurrence counts: " + json.dumps(list(preserve_terms)) + "\n\n" if preserve_terms else "") + context_before, "context_after": context_after}
                 if cfg.provider == "ollama":
                     candidate = _refine_ollama(encoded, cfg, mode, **kwargs)
                 elif cfg.provider == "openai":
@@ -503,7 +505,7 @@ def refine_paragraphs_with_model(
                     source_text = originals[pid]
                     proposed = str(parsed.get(pid, source_text))
                     paragraph_limit = max(max_ratio, 0.35 if len(source_text.split()) < 120 else max_ratio)
-                    valid, issues = validate_humanizer_preservation(source_text, proposed, max_word_change_ratio=paragraph_limit)
+                    valid, issues = validate_humanizer_preservation(source_text, proposed, max_word_change_ratio=paragraph_limit, preserve_terms=preserve_terms)
                     source_score = source_scores[pid]
                     proposed_score = int(analyse_scholarly_style(proposed).get("naturalness_score", 0)) if valid and proposed != source_text else source_score
                     if not valid or proposed_score < source_score:

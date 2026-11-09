@@ -1,5 +1,17 @@
 # Scholarly Humanizer, Render-ready standalone app
 
+## Compact Natural Voice Constructor workspace, v2.6.0
+
+The source and humanised editors now remain side by side on desktop and stack on narrow screens. Editing depth, editor selection and the main actions share one compact toolbar. The AI signal index and Human-like style appear in a small score strip. Sentence maps, signal breakdowns, before/after audits and developer tools remain available under **Detailed analysis**, collapsed by default.
+
+Each editor has a word count and its own analysis label. The result can be edited, copied, analysed again or used as the next source. Editing either text clears the headline scores until analysis is rerun. Balanced is the default editing depth. The local and focused editors work without an external model key. The contextual editor clearly reports when it uses the local fallback.
+
+**Protect specific words or phrases** accepts up to 40 comma-separated terms, each at most 120 characters. Exact, case-sensitive spelling and occurrence counts are checked across local, focused and contextual editing. Existing checks for numbers, citations, acronyms and claim qualifiers remain in place. These checks protect specified content but do not establish full semantic equivalence.
+
+An unedited, checked DOCX result downloads in its retained Word structure. Manual result edits download as a new Word document containing the displayed text. The export API rejects changed text paired with an older checked Word job, preventing an unnoticed stale download.
+
+Validation: `python -m unittest discover -s tests -q` includes editor layout contracts, all three term-preservation paths and real DOCX upload, rewrite and export checks.
+
 ## Natural voice and signal efficiency, v2.5.0
 
 Local editing now constructs direct verbs when actor and tense are explicit, for example, “We conducted an analysis of” becomes “We analysed”. Conditional scope and research intentions are retained. Preservation checks now also guard acronyms, negation, possibility, obligation and intention markers. These checks are conservative safeguards, not proof of semantic equivalence.
@@ -18,9 +30,9 @@ A FastAPI web application built from the supplied `scholarly_humanizer.py` modul
 
 ## AI Detector and Human-like Style workflow
 
-The dashboard is AI-detector first. It screens nine corroborating AI-style signal families and reports an explainable AI Signal Index, descriptive signal level, confidence, 0–27 forensic category score, evidence counts and sentence map. The second headline metric is **Human-like Style**, defined exactly as `100 - AI Signal`. The interface does not estimate what percentage of the document was "written by AI" because detector scores are not reliable authorship fractions.
+The compact workspace screens nine corroborating AI-style signal families and reports an explainable AI Signal Index. Detailed analysis includes descriptive signal level, confidence, 0–27 forensic category score, evidence counts and sentence map. The second headline metric is **Human-like Style**, defined exactly as `100 - AI Signal`. The interface does not estimate what percentage of the document was "written by AI" because detector scores are not reliable authorship fractions.
 
-The existing humanizer still uses its internal Naturalness metric to choose the best preservation-safe rewrite. Engine 1 generates progressively stronger local candidates for Light, Balanced and Deep modes, then keeps the strongest candidate that does not reduce internal rewrite quality. Deep is the default. Engine 2 applies the same preservation gate to API-refined batches. After rewriting, the visible AI Signal is recalculated from the revised text and Human-like Style is displayed as its exact complement.
+The existing humanizer still uses its internal Naturalness metric to choose the best preservation-safe rewrite. Engine 1 generates progressively stronger local candidates for Light, Balanced and Deep modes, labelled Gentle, Balanced and Thorough in the workspace, then keeps the strongest candidate that does not reduce internal rewrite quality. Balanced is the default. Engine 2 applies the same preservation gate to API-refined batches. After rewriting, the visible AI Signal is recalculated from the revised text and Human-like Style is displayed as its exact complement.
 
 ## Core features
 

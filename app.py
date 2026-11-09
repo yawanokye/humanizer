@@ -34,8 +34,8 @@ MAX_UPLOAD_BYTES = int(os.getenv("HUMANIZER_MAX_UPLOAD_BYTES", str(15 * 1024 * 1
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
-    title="Scholarly Humanizer",
-    version="2.5.0",
+    title="Natural Voice Constructor",
+    version="2.6.0",
     description="Format-preserving scholarly humanization and AI-style screening with protected DOCX patching, large-document jobs, private calibration, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -75,13 +75,13 @@ def _get_document(document_id: str | None) -> dict | None:
             item["updated_at"] = time.time()
         return item
 
-def _store_humanized_document(document_id: str, job_id: str, content: bytes, certificate: dict) -> None:
+def _store_humanized_document(document_id: str, job_id: str, content: bytes, certificate: dict, *, text: str) -> None:
     with _DOCUMENT_STORE_LOCK:
         item = _DOCUMENT_STORE.get(document_id)
         if item is None:
             return
         outputs = item.setdefault("humanized_outputs", {})
-        outputs[job_id] = {"content": content, "certificate": certificate, "created_at": time.time()}
+        outputs[job_id] = {"content": content, "certificate": certificate, "text_digest": text_digest(text), "created_at": time.time()}
         # Keep only the newest few exports per uploaded manuscript.
         if len(outputs) > 4:
             for old_job in sorted(outputs, key=lambda key: float(outputs[key].get("created_at", 0)))[:-4]:
@@ -128,6 +128,7 @@ class HumanizeRequest(TextRequest):
     document_id: str | None = None
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
+    preserve_terms: list[str] = Field(default_factory=list, max_length=40)
 
 
 class ExportRequest(TextRequest):
@@ -422,10 +423,18 @@ def analyse(payload: TextRequest) -> dict:
     return dashboard_report(text)
 
 
+def _protected_terms(payload: HumanizeRequest) -> list[str]:
+    terms = list(dict.fromkeys(term.strip() for term in payload.preserve_terms if term.strip()))
+    if any(len(term) > 120 for term in terms):
+        raise HTTPException(status_code=422, detail="Each protected term must contain 120 characters or fewer.")
+    return terms
+
+
 def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None] | None = None, checkpoint: Callable[[dict], None] | None = None) -> dict:
     progress = progress or (lambda _progress, _stage: None)
     checkpoint = checkpoint or (lambda _state: None)
     original = _validate_size(payload.text)
+    terms = _protected_terms(payload)
     selected_engine = "engine2" if payload.use_model else payload.engine
     actual_engine = selected_engine
     progress(8, "Analysing source text…")
@@ -448,7 +457,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
 
     if selected_engine == "engine1":
         progress(28, "Running Engine 1 local rewrite…")
-        revised, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
+        revised, engine1_report = humanize_scholarly_text(original, mode=payload.mode, preserve_terms=terms)
 
     elif selected_engine == "engine3":
         progress(28, "Running Engine 3 signal-guided rewrite…")
@@ -457,13 +466,14 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
             detector=original_dashboard.get("ai_detector", {}),
             mode=payload.mode,
             segments=original_dashboard.get("segments", []),
+            preserve_terms=terms,
         )
 
     elif selected_engine == "engine2":
         progress(24, "Running protected local preparation…")
         # Engine 2 begins from the independent local cleanup so the API spends its
         # effort on higher-level prose rather than obvious mechanical artifacts.
-        engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode)
+        engine1_text, engine1_report = humanize_scholarly_text(original, mode=payload.mode, preserve_terms=terms)
         status = provider_status()
         if not status.get("configured"):
             actual_engine = "engine1_fallback"
@@ -481,6 +491,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
                 model_override=payload.engine2_model,
                 progress_callback=lambda pct, stage: progress(38 + int(max(0, min(100, pct)) * 0.34), stage),
                 checkpoint_callback=checkpoint,
+                preserve_terms=terms,
             )
         else:
             actual_engine = "engine1_fallback"
@@ -550,7 +561,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
             "section_profile_after": revised_dashboard.get("section_profile", {}),
         }
 
-    preservation = preservation_certificate(original, revised)
+    preservation = preservation_certificate(original, revised, preserve_terms=terms)
     progress(96, "Preparing revised text…")
 
     return {
@@ -558,6 +569,7 @@ def _humanize_core(payload: HumanizeRequest, progress: Callable[[int, str], None
         "actual_engine": actual_engine,
         "selected_engine2_model": ({"gpt-5.6-luna": "v1", "gpt-5.6-terra": "v2"}.get(payload.engine2_model, payload.engine2_model)) if selected_engine == "engine2" else None,
         "changed": revised != original,
+        "protected_terms": terms,
         "preservation_certificate": preservation,
         "original_report": original_dashboard,
         "text": revised,
@@ -615,6 +627,7 @@ def _humanize_structured_docx(
     progress = progress or (lambda _pct, _stage: None)
     checkpoint = checkpoint or (lambda _state: None)
     structure = document["structure"]
+    terms = _protected_terms(payload)
     original = str(document["text"])
     submitted = _validate_size(payload.text)
     if text_digest(submitted) != str(document.get("source_digest") or text_digest(original)):
@@ -642,9 +655,9 @@ def _humanize_structured_docx(
         for pos, item in enumerate(items, start=1):
             pid = int(item["paragraph_index"])
             source_text = originals[pid]
-            candidate, _report = humanize_scholarly_text(source_text, mode=payload.mode)
+            candidate, _report = humanize_scholarly_text(source_text, mode=payload.mode, preserve_terms=terms)
             local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
-            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit)
+            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit, preserve_terms=terms)
             if valid:
                 replacements[pid] = candidate
                 changed += int(candidate != source_text)
@@ -668,9 +681,10 @@ def _humanize_structured_docx(
                 detector=local_dashboard.get("ai_detector", {}),
                 mode=payload.mode,
                 segments=local_dashboard.get("segments", []),
+                preserve_terms=terms,
             )
             local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
-            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit)
+            valid, _issues = validate_humanizer_preservation(source_text, candidate, max_word_change_ratio=local_limit, preserve_terms=terms)
             if valid:
                 replacements[pid] = candidate
                 changed += int(candidate != source_text)
@@ -690,9 +704,9 @@ def _humanize_structured_docx(
         for item in items:
             pid = int(item["paragraph_index"])
             source_text = originals[pid]
-            local_candidate, _local_report = humanize_scholarly_text(source_text, mode=payload.mode)
+            local_candidate, _local_report = humanize_scholarly_text(source_text, mode=payload.mode, preserve_terms=terms)
             local_limit = 0.60 if len(source_text.split()) < 120 else max(0.14, min(0.48, 90 / max(1, len(source_text.split()))))
-            valid, _issues = validate_humanizer_preservation(source_text, local_candidate, max_word_change_ratio=local_limit)
+            valid, _issues = validate_humanizer_preservation(source_text, local_candidate, max_word_change_ratio=local_limit, preserve_terms=terms)
             text_for_api = local_candidate if valid else source_text
             local_changed += int(text_for_api != source_text)
             seed_items.append({**item, "text": text_for_api})
@@ -715,6 +729,7 @@ def _humanize_structured_docx(
                 model_override=payload.engine2_model,
                 progress_callback=lambda pct, stage: progress(24 + int(max(0, min(100, pct)) * 0.48), stage),
                 checkpoint_callback=checkpoint,
+                preserve_terms=terms,
             )
 
     progress(75, "Reassembling revised prose into the original Word structure…")
@@ -749,13 +764,13 @@ def _humanize_structured_docx(
         changed_paragraphs=len(changed_replacements),
         locked_paragraphs=int(structure.get("locked_paragraphs") or 0),
     )
-    text_certificate = preservation_certificate(original, revised)
+    text_certificate = preservation_certificate(original, revised, preserve_terms=terms)
     combined_certificate = _merge_document_preservation(text_certificate, word_certificate)
     if not combined_certificate["passed"]:
         raise RuntimeError("Word structure preservation audit failed. Export was blocked and the original DOCX was left unchanged.")
 
     progress(91, "Running independent post-rewrite audit…")
-    _store_humanized_document(str(document["document_id"]), job_id, patched, combined_certificate)
+    _store_humanized_document(str(document["document_id"]), job_id, patched, combined_certificate, text=revised)
     after_human_like = 100 - after_ai_signal
     before_human_like = 100 - before_ai_signal
     progress(97, "Format-preserving Word document is ready…")
@@ -765,6 +780,7 @@ def _humanize_structured_docx(
         "actual_engine": actual_engine,
         "selected_engine2_model": ({"gpt-5.6-luna": "v1", "gpt-5.6-terra": "v2"}.get(payload.engine2_model, payload.engine2_model)) if selected_engine == "engine2" else None,
         "changed": revised != original,
+        "protected_terms": terms,
         "text": revised,
         "report": revised_dashboard,
         "original_report": original_dashboard,
@@ -887,6 +903,8 @@ def export_docx(payload: ExportRequest) -> Response:
         output = (document.get("humanized_outputs") or {}).get(payload.humanize_job_id)
         if output is None:
             raise HTTPException(status_code=404, detail="The format-preserving Word output for this humanization job is no longer available.")
+        if output.get("text_digest") != text_digest(text):
+            raise HTTPException(status_code=409, detail="This text was edited after the checked Word version. Download it as a new Word document to include your edits.")
         certificate = output.get("certificate") or {}
         if not certificate.get("passed"):
             raise HTTPException(status_code=409, detail="Word format preservation audit did not pass, so export was blocked.")
