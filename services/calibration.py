@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_PATH = BASE_DIR / "calibration" / "meta_classifier.json"
+FEATURE_SCHEMA_VERSION = "2.5-prose-coverage"
 
 FEATURE_NAMES = (
     "forensic_pct",
@@ -82,6 +83,10 @@ def load_model() -> dict[str, Any] | None:
         return None
     if not isinstance(model, dict) or not model.get("trained"):
         return None
+    # Earlier features included structural text and truncated paragraph coverage.
+    # Refit on the stored labelled texts before reusing learned probabilities.
+    if model.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
+        return None
     model_type = str(model.get("model_type") or "logistic")
     if model_type == "logistic" and not isinstance(model.get("weights"), dict):
         return None
@@ -101,7 +106,7 @@ def calibration_status() -> dict[str, Any]:
             "mode": "uncalibrated",
             "model_path": str(path),
             "sample_count": 0,
-            "message": "No labelled calibration model is installed. The transparent four-layer ensemble is being used.",
+            "message": "No compatible labelled calibration model is installed. Retrain older models for the current prose-only features. The transparent ensemble is being used.",
         }
     metrics = model.get("validation_metrics") or model.get("metrics") or {}
     return {
@@ -286,7 +291,7 @@ def _fit_logistic(data: list[dict[str, Any]], *, epochs: int = 1600, learning_ra
         for j in range(len(weights)):
             weights[j] -= learning_rate * (grad_w[j] / len(matrix) + l2 * weights[j])
     return {
-        "trained": True, "model_type": "logistic", "version": "2.4-logistic-1",
+        "trained": True, "model_type": "logistic", "version": "2.5-logistic-1", "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "sample_count": len(data), "positive_count": positives, "negative_count": len(data) - positives,
         "feature_names": names, "means": means, "scales": scales,
         "weights": {name: weights[i] for i, name in enumerate(names)}, "bias": bias,
@@ -306,7 +311,7 @@ def _fit_gaussian_nb(data: list[dict[str, Any]]) -> dict[str, Any]:
             class_vars[name] = max(1e-3, sum((v - mu) ** 2 for v in vals) / max(1, len(vals)))
         classes[str(klass)] = {"prior": len(rows) / len(matrix), "means": class_means, "variances": class_vars}
     return {
-        "trained": True, "model_type": "gaussian_nb", "version": "2.4-gnb-1",
+        "trained": True, "model_type": "gaussian_nb", "version": "2.5-gnb-1", "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "sample_count": len(data), "positive_count": sum(labels), "negative_count": len(data) - sum(labels),
         "feature_names": names, "means": means, "scales": scales, "classes": classes,
     }
@@ -323,7 +328,7 @@ def _fit_centroid(data: list[dict[str, Any]]) -> dict[str, Any]:
         within_distances.extend(sum((row[i] - center[i]) ** 2 for i in range(len(names))) for row in rows)
     temperature = max(0.5, _mean(within_distances))
     return {
-        "trained": True, "model_type": "nearest_centroid", "version": "2.4-centroid-1",
+        "trained": True, "model_type": "nearest_centroid", "version": "2.5-centroid-1", "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "sample_count": len(data), "positive_count": sum(labels), "negative_count": len(data) - sum(labels),
         "feature_names": names, "means": means, "scales": scales, "centroids": centroids, "temperature": temperature,
     }

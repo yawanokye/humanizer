@@ -27,13 +27,10 @@ _LEGACY_ARTIFACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # to the preservation-gated model pass because local synonym rotation can damage
 # disciplinary meaning and the author's voice.
 _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\binsofar as of\b", re.I), "because of"),
-    (re.compile(r"\binsofar as\b", re.I), "because"),
     (re.compile(r"\bdue to the fact that\b", re.I), "because"),
     (re.compile(r"\bin order to\b", re.I), "to"),
     (re.compile(r"\bfor the purpose of\b", re.I), "to"),
     (re.compile(r"\bwith regard to\b", re.I), "regarding"),
-    (re.compile(r"\bwith respect to\b", re.I), "regarding"),
     (re.compile(r"\bthe present investigation\b", re.I), "the study"),
     (re.compile(r"\bthe present study\b", re.I), "the study"),
     (re.compile(r"\bthe current study\b", re.I), "the study"),
@@ -52,14 +49,12 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bit is against this background that\b", re.I), "against this background,"),
     (re.compile(r"\bthe reason for this is because\b", re.I), "this is because"),
     (re.compile(r"\bof particular importance is the fact that\b", re.I), "importantly,"),
-    (re.compile(r"\bthis study aims to contribute to\b", re.I), "the study contributes to"),
     (re.compile(r"\bthe study is important in\b", re.I), "the study is useful for"),
     (re.compile(r"\bit can therefore be said that\b", re.I), "therefore,"),
     (re.compile(r"\bthe above discussion shows that\b", re.I), "the discussion shows that"),
     (re.compile(r"\bthe foregoing discussion shows that\b", re.I), "the discussion shows that"),
     (re.compile(r"\bfrom the foregoing,?\s*\b", re.I), ""),
     (re.compile(r"\bthis highlights the importance of\b", re.I), "this points to the importance of"),
-    (re.compile(r"\bthis means that\b", re.I), "this suggests that"),
     (re.compile(r"\bit is clear that\b", re.I), ""),
     (re.compile(r"\bit is evident that\b", re.I), ""),
     (re.compile(r"\bit is worth noting that\b", re.I), ""),
@@ -85,10 +80,31 @@ _SAFE_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bThe present report\b", re.I), "The report"),
     (re.compile(r"\bin nontechnical terms,\s*", re.I), "In practical terms, "),
     (re.compile(r"\bfor faster visual comparison\b", re.I), "for easier visual comparison"),
-    (re.compile(r"\bprovides an explicit\b", re.I), "provides a clear"),
+    (re.compile(r"\bmade use of\b", re.I), "used"),
+    (re.compile(r"\bmakes use of\b", re.I), "uses"),
+    (re.compile(r"\bmake use of\b", re.I), "use"),
+    (re.compile(r"\bon a daily basis\b", re.I), "daily"),
+    (re.compile(r"\bin the event that\b", re.I), "if"),
+    (re.compile(r"\bduring the course of\b", re.I), "during"),
 )
 
+# Construct direct verbs only when the actor and tense are explicit. Do not
+# rotate technical nouns or convert an intention into a completed finding.
+_DIRECT_VERB_RE = re.compile(
+    r"\b(?P<actor>we|they|the researchers|the authors|the team)\s+"
+    r"(?:conducted|performed|carried out)\s+"
+    r"(?P<action>an analysis of|an examination of|an evaluation of)\s+", re.I,
+)
+_DIRECT_VERBS = {"an analysis of": "analysed", "an examination of": "examined", "an evaluation of": "evaluated"}
+_QUALIFIER_PATTERNS = {
+    "negation": re.compile(r"\b(?:not(?!\s+(?:only|simply|merely)\b)|never|neither|nor|without|no)\b|n['’]t\b", re.I),
+    "possibility": re.compile(r"\b(?:may|might|could)\b", re.I),
+    "obligation": re.compile(r"\b(?:must|should)\b", re.I),
+    "intention": re.compile(r"\b(?:aims?|aimed|seeks?|sought|intends?|intended)\s+to\b", re.I),
+}
+
 _GENERIC_PHRASES: tuple[re.Pattern[str], ...] = (
+    _DIRECT_VERB_RE,
     re.compile(r"\bin today's world\b", re.I),
     re.compile(r"\bit is important to note\b", re.I),
     re.compile(r"\bit should be noted\b", re.I),
@@ -382,11 +398,11 @@ def analyse_scholarly_style(text: str) -> dict[str, Any]:
         score -= 5
     if lexical_diversity < float(variation_profile["lexical_diversity_target"]):
         score -= min(10, round((float(variation_profile["lexical_diversity_target"]) - lexical_diversity) * 50))
-    if sentence_length_cv < float(variation_profile["sentence_length_cv_target"]):
+    if len(sentence_lengths) >= 8 and sentence_length_cv < float(variation_profile["sentence_length_cv_target"]):
         score -= min(10, round((float(variation_profile["sentence_length_cv_target"]) - sentence_length_cv) * 20))
-    if paragraph_length_cv < float(variation_profile["paragraph_length_cv_target"]):
+    if len(paragraph_lengths) >= 4 and paragraph_length_cv < float(variation_profile["paragraph_length_cv_target"]):
         score -= min(7, round((float(variation_profile["paragraph_length_cv_target"]) - paragraph_length_cv) * 15))
-    if short_sentence_ratio < float(variation_profile["short_sentence_ratio_target"]):
+    if len(sentence_lengths) >= 8 and short_sentence_ratio < float(variation_profile["short_sentence_ratio_target"]):
         score -= 4
     # Avoid a cliff where splitting one overloaded sentence suddenly makes the
     # text four points "less natural". Long sentences are useful for variation,
@@ -804,6 +820,9 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
         value = pattern.sub(replacement, value)
     for pattern, replacement in _SAFE_PHRASE_REPLACEMENTS:
         value = _replace_preserving_case(value, pattern, replacement)
+    value = _DIRECT_VERB_RE.sub(
+        lambda match: match.group("actor") + " " + _DIRECT_VERBS[match.group("action").lower()] + " ", value
+    )
 
     if level in {"balanced", "deep"}:
         value = _remove_repeated_sentence_connectors(
@@ -829,7 +848,7 @@ def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: 
     return value.strip()
 
 
-def _signature(text: str) -> dict[str, list[str]]:
+def _signature(text: str) -> dict[str, Any]:
     value = str(text or "")
     return {
         "headings": [match.strip() for match in _HEADING_LINE_RE.findall(value)],
@@ -845,6 +864,8 @@ def _signature(text: str) -> dict[str, list[str]]:
         "emails": _EMAIL_RE.findall(value),
         "reference_headings": [line.strip() for line in value.splitlines() if _REFERENCE_HEADING_RE.match(line.strip())],
         "equationish": _INLINE_EQUATION_RE.findall(value),
+        "acronyms": _ACRONYM_RE.findall(value),
+        "claim_qualifiers": {key: len(pattern.findall(value)) for key, pattern in _QUALIFIER_PATTERNS.items()},
     }
 
 
@@ -853,7 +874,7 @@ def validate_humanizer_preservation(original: str, candidate: str, *, max_word_c
     reasons: list[str] = []
     before = _signature(original)
     after = _signature(candidate)
-    for key in ("headings", "years", "numbers", "placeholders", "urls", "citation_blocks", "numbered_items", "display_equations", "table_lines", "tabular_lines", "emails", "reference_headings", "equationish"):
+    for key in ("headings", "years", "numbers", "placeholders", "urls", "citation_blocks", "numbered_items", "display_equations", "table_lines", "tabular_lines", "emails", "reference_headings", "equationish", "acronyms", "claim_qualifiers"):
         if before[key] != after[key]:
             reasons.append(f"{key} changed")
 
@@ -893,6 +914,8 @@ def preservation_certificate(original: str, candidate: str) -> dict[str, Any]:
         "equations": before["display_equations"] == after["display_equations"] and before["equationish"] == after["equationish"],
         "references": reference_tail(original) == reference_tail(candidate),
         "placeholders": before["placeholders"] == after["placeholders"],
+        "acronyms": before["acronyms"] == after["acronyms"],
+        "claim_qualifiers": before["claim_qualifiers"] == after["claim_qualifiers"],
     }
     return {
         "passed": all(checks.values()),
@@ -1322,6 +1345,7 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
     # equations, emails and reference content.
     local_change_limit = 0.60 if original_words < 120 else max(0.14, min(0.48, 90 / original_words))
     candidates: list[tuple[int, int, int, str, str, dict[str, Any]]] = []
+    evaluated: dict[str, tuple[bool, list[str], dict[str, Any]]] = {}
     preservation_failures: list[str] = []
     level_rank = {"light": 0, "balanced": 1, "deep": 2}
 
@@ -1344,13 +1368,13 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
 
         candidate = "".join(output)
         candidate = re.sub(r"[ \t]+\n", "\n", candidate).strip()
-        valid, issues = validate_humanizer_preservation(
-            original, candidate, max_word_change_ratio=local_change_limit
-        )
+        if candidate not in evaluated:
+            valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=local_change_limit)
+            evaluated[candidate] = (valid, issues, analyse_scholarly_style(candidate) if valid else {})
+        valid, issues, candidate_report = evaluated[candidate]
         if not valid:
             preservation_failures.extend(issues)
             continue
-        candidate_report = analyse_scholarly_style(candidate)
         score = int(candidate_report.get("naturalness_score", 0))
         changed_chars = sum(1 for a, b in zip(original, candidate) if a != b) + abs(len(original) - len(candidate))
         # Naturalness is primary. For ties, prefer the requested deeper safe pass

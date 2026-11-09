@@ -1,5 +1,19 @@
 # Scholarly Humanizer, Render-ready standalone app
 
+## Natural voice and signal efficiency, v2.5.0
+
+Local editing now constructs direct verbs when actor and tense are explicit, for example, “We conducted an analysis of” becomes “We analysed”. Conditional scope and research intentions are retained. Preservation checks now also guard acronyms, negation, possibility, obligation and intention markers. These checks are conservative safeguards, not proof of semantic equivalence.
+
+Balanced Engine 2 processing selects paragraphs with actionable prose issues and batches them by stable paragraph ID. Clean prose stays unchanged. Deep mode remains available for a full eligible-prose edit. Reports include skipped paragraphs, skipped words and model-target words. Failed evidence checks retain the source paragraph.
+
+The AI signal index now assesses every prose paragraph, including paragraphs beyond the previous 120-paragraph cutoff. All scoring layers use the same assessable prose, excluding detected headings, tables and reference lists. Sentence diagnostics are reused within each request, and document counts are calculated once rather than inside the sentence loop. No user-text cache persists between requests.
+
+Human-like style remains exactly `100 - AI signal index`. The dashboard reports assessed words and paragraphs. Samples below 80 prose words or three prose sentences are provisional with low confidence. Structure-only inputs show no headline scores. These are style-screening indicators, not authorship percentages or validated accuracy claims.
+
+The feature schema is now `2.5-prose-coverage`. Previously trained calibration files require refitting from the stored labelled texts through Benchmark Lab before they can be used again. Without a compatible model, the app uses its transparent heuristic ensemble. No training labels or validation results are invented.
+
+Validation: `python -m unittest discover -s tests -q`.
+
 A FastAPI web application built from the supplied `scholarly_humanizer.py` module. It combines an explainable four-layer AI-style detector with protected scholarly rewriting and three rewrite engines. It does not treat the detector score as proof of authorship.
 
 ## AI Detector and Human-like Style workflow

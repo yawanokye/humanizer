@@ -35,7 +35,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Scholarly Humanizer",
-    version="2.4.4",
+    version="2.5.0",
     description="Format-preserving scholarly humanization and AI-style screening with protected DOCX patching, large-document jobs, private calibration, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

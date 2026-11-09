@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from scholarly_humanizer import analyse_scholarly_style
-from services.ai_detector import ai_check_report, sentence_ai_signal
+from services.ai_detector import ai_check_report, score_sentence_cached
 from services.calibration import calibration_status, predict_probability
 from services.reference_lm import score_reference_lm
 
@@ -682,19 +682,26 @@ def _signal_level_from_percentage(score: int) -> str:
     return "Strong AI-style signal"
 
 
-def analyse_segments(text: str) -> list[dict[str, Any]]:
+def analyse_segments(text: str, *, sentence_cache: dict | None = None) -> list[dict[str, Any]]:
     raw = str(text or "")
     positions = _iter_sentences_with_offsets(raw)
     section_markers = _section_markers(raw)
-    openings = Counter(_opening(item[4]) for item in positions if _opening(item[4]))
+    section_labels = [_section_for_offset(section_markers, item[2]) for item in positions]
+    protected_flags = [_is_structural_segment(item[4].strip()) or section in {"references", "appendix"}
+                       for item, section in zip(positions, section_labels)]
+    prose_positions = [item for item, protected in zip(positions, protected_flags) if not protected]
+    prose_raw = "\n".join(item[4] for item in prose_positions)
+    prose_word_count = _word_count(prose_raw)
+    openings = Counter(_opening(item[4]) for item in prose_positions if _opening(item[4]))
     paragraph_openings: Counter[str] = Counter()
-    for paragraph_index, sentence_index, *_rest, sentence in positions:
+    for paragraph_index, sentence_index, *_rest, sentence in prose_positions:
         if sentence_index == 0:
             paragraph_openings[_opening(sentence)] += 1
 
-    frame_counts = {frame: len(re.findall(rf"\b{re.escape(frame)}\b", raw, re.I)) for frame in REPEATED_FRAMES}
+    frame_patterns = {frame: re.compile(rf"\b{re.escape(frame)}\b", re.I) for frame in REPEATED_FRAMES}
+    frame_counts = {frame: len(pattern.findall(prose_raw)) for frame, pattern in frame_patterns.items()}
     connector_counts = Counter()
-    for *_pos, sentence in positions:
+    for *_pos, sentence in prose_positions:
         connector = CONNECTOR_RE.match(sentence.strip())
         if connector:
             connector_counts[connector.group(1).casefold()] += 1
@@ -702,8 +709,8 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
     results: list[SegmentDiagnostic] = []
     for global_index, (paragraph_index, sentence_index, start, end, sentence) in enumerate(positions):
         clean = sentence.strip()
-        section = _section_for_offset(section_markers, start)
-        protected = _is_structural_segment(clean) or section in {"references", "appendix"}
+        section = section_labels[global_index]
+        protected = protected_flags[global_index]
         reasons: list[str] = []
         risk = 0
         word_count = _word_count(clean)
@@ -726,7 +733,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             ))
             continue
 
-        ai_risk, ai_reasons = sentence_ai_signal(clean, academic=True)
+        ai_risk, ai_reasons = score_sentence_cached(clean, True, sentence_cache)
         if ai_risk:
             risk += ai_risk
             reasons.extend(ai_reasons)
@@ -781,7 +788,7 @@ def analyse_segments(text: str) -> list[dict[str, Any]]:
             reasons.append("Implausible percentage needs verification")
 
         for frame, count in frame_counts.items():
-            if count > max(2, _word_count(raw) // 500) and re.search(rf"\b{re.escape(frame)}\b", clean, re.I):
+            if count > max(2, prose_word_count // 500) and frame_patterns[frame].search(clean):
                 risk += min(12, 3 + count)
                 reasons.append(f'Repeated frame: “{frame}”')
 
@@ -884,7 +891,21 @@ def _decision_status(ai_signal: int, layers: list[int], *, calibrated: bool) -> 
 
 def dashboard_report(text: str, *, use_calibrator: bool = True, include_private: bool = False) -> dict[str, Any]:
     global_report = analyse_scholarly_style(text)
-    segments = analyse_segments(text)
+    sentence_cache: dict = {}
+    segments = analyse_segments(text, sentence_cache=sentence_cache)
+    prose_paragraphs: dict[int, list[str]] = {}
+    for segment in segments:
+        if not segment.get("protected"):
+            prose_paragraphs.setdefault(int(segment["paragraph_index"]), []).append(str(segment["text"]).strip())
+    prose_text = "\n\n".join(" ".join(sentences) for sentences in prose_paragraphs.values())
+    prose_report = global_report if prose_text == text else analyse_scholarly_style(prose_text)
+    prose_words = _word_count(prose_text)
+    prose_sentence_count = sum(len(sentences) for sentences in prose_paragraphs.values())
+    coverage = {
+        "total_words": _word_count(text), "assessed_words": prose_words,
+        "excluded_words": max(0, _word_count(text) - prose_words),
+        "assessed_sentences": prose_sentence_count, "assessed_paragraphs": len(prose_paragraphs),
+    }
 
     # Naturalness remains an internal rewrite-quality metric. It is deliberately
     # not presented as the inverse of AI likelihood. The public complementary
@@ -892,10 +913,10 @@ def dashboard_report(text: str, *, use_calibrator: bool = True, include_private:
     naturalness = max(0, min(100, int(global_report.get("naturalness_score", 0))))
     style_concern = 100 - naturalness  # legacy API field only
 
-    category_concerns = _build_category_concerns(text, segments, global_report)
+    category_concerns = _build_category_concerns(prose_text, segments, prose_report)
     statistical_fingerprint, statistical_components = _statistical_fingerprint(category_concerns)
-    detector = ai_check_report(text, global_report=global_report, academic=True)
-    reference_lm = score_reference_lm(text)
+    detector = ai_check_report(prose_text, global_report=prose_report, academic=True, sentence_cache=sentence_cache)
+    reference_lm = score_reference_lm(prose_text)
     section_profile = _section_profile(segments)
 
     forensic_pct = int(detector.get("category_signal_percentage", 0))
@@ -941,6 +962,11 @@ def dashboard_report(text: str, *, use_calibrator: bool = True, include_private:
         score_source = "transparent_four_layer_ensemble"
 
     decision_status, decision_reason = _decision_status(ai_signal, layers, calibrated=bool(meta_prediction))
+    sufficient_prose = prose_words >= 80 and prose_sentence_count >= 3
+    if not sufficient_prose:
+        decision_status = "Indeterminate"
+        decision_reason = "Too little assessable prose. Scores are provisional until the sample contains at least 80 prose words and three sentences."
+        detector["confidence"] = "Low"
     if decision_status == "Indeterminate" and detector.get("confidence") == "High":
         detector["confidence"] = "Medium"
 
@@ -1001,6 +1027,9 @@ def dashboard_report(text: str, *, use_calibrator: bool = True, include_private:
         "ai_signal_breakdown": detector["signals"],
         "decision_status": decision_status,
         "decision_reason": decision_reason,
+        "score_available": prose_words > 0,
+        "sufficient_prose": sufficient_prose,
+        "analysis_coverage": coverage,
         "section_profile": section_profile,
         # Internal/backward-compatible rewrite-quality field. The dashboard does not
         # use this as the complement of AI Signal.
