@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Natural Voice Constructor</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.6.0">
+  <link rel="stylesheet" href="/static/style.css?v=2.6.1">
 </head>
 <body class="compact-app">
   <header class="topbar">
@@ -19,7 +19,7 @@
         <label id="engine2ModelWrap" class="engine2-setting" hidden>AI refinement<select id="engine2Model"><option value="v1">V1 (Light)</option><option value="v2" selected>V2 (Moderate)</option></select><small id="engine2Hint">Choose a refinement level.</small></label>
         <div class="primary-actions"><button id="analyseBtn" class="secondary" type="button">Analyse source</button><button id="humanizeBtn" class="primary" type="button">Humanise text <span aria-hidden="true">→</span></button></div>
       </div>
-      <details class="writing-options"><summary>Protect specific words or phrases</summary><label for="preserveTerms">Keep these terms unchanged</label><input id="preserveTerms" type="text" maxlength="4000" placeholder="e.g. equilibrium prior, Black-Litterman, financial wellbeing"><small>Separate terms with commas. Spelling and capitalisation are preserved.</small></details>
+      <details class="writing-options"><summary>Protect specific words or phrases</summary><label for="preserveTerms">Keep these terms unchanged</label><input id="preserveTerms" type="text" maxlength="4000" placeholder="e.g. equilibrium prior, Black-Litterman, financial wellbeing"><small>Use up to 40 comma-separated terms, each at most 120 characters. Spelling and capitalisation are preserved.</small></details>
       <p id="message" class="message" aria-live="polite"></p>
       <div id="activityProgress" class="activity-progress" role="status" aria-live="polite" aria-atomic="true" hidden><div id="activityRing" class="activity-ring" style="--activity-angle:0deg"><span id="activityPercent">0%</span></div><div class="activity-progress-copy"><strong id="activityTitle">Working</strong><span id="activityStage">Preparing request…</span></div></div>
     </section>
