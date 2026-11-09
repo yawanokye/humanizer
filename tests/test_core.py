@@ -95,7 +95,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.6.0', html)
+        self.assertIn('/static/app.js?v=2.6.1', html)
         self.assertIn('/static/style.css?v=2.6.1', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)

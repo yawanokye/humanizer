@@ -30,6 +30,7 @@ function protectedTerms() {
 }
 function markAnalysisStale() {
   currentReport = null;
+  if ($('analysisStaleNotice')) $('analysisStaleNotice').hidden = false;
   if ($('aiScore')) $('aiScore').textContent='—';
   if ($('humanLikeScore')) $('humanLikeScore').textContent='—';
   if ($('aiScoreBar')) $('aiScoreBar').style.width='0%';
@@ -187,6 +188,7 @@ function escapeHtml(value) {
 
 function updateDashboard(report, comparison = null) {
   currentReport = report;
+  if ($('analysisStaleNotice')) $('analysisStaleNotice').hidden = true;
   const ai = Number(report.ai_detection_percentage ?? 0);
   const humanLike = Number(report.human_like_style_percentage ?? (100 - ai));
   const detector = report.ai_detector || {};
@@ -889,6 +891,7 @@ $('clearBtn')?.addEventListener('click',()=>{
   renderPreservation(null);
   renderFindings([]);
   renderMetrics({});
+  if ($('analysisStaleNotice')) $('analysisStaleNotice').hidden = true;
   activateTab('detector');
   setMessage('Workspace cleared.');
   refreshEditorMeta();
