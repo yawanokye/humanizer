@@ -490,7 +490,7 @@ def _is_protected_block(block: str) -> bool:
     return all(_is_protected_line(line) for line in lines)
 
 
-def _mask_protected_spans(text: str) -> tuple[str, dict[str, str]]:
+def _mask_protected_spans(text: str, *, preserve_terms: list[str] | tuple[str, ...] = ()) -> tuple[str, dict[str, str]]:
     """Shield evidence-bearing spans in one pass.
 
     Earlier builds repeatedly applied regexes to already-masked text. A later
@@ -502,7 +502,7 @@ def _mask_protected_spans(text: str) -> tuple[str, dict[str, str]]:
     """
     value = str(text or "")
     protected: dict[str, str] = {}
-    patterns = (
+    patterns = tuple(re.compile(re.escape(term)) for term in sorted(set(preserve_terms), key=len, reverse=True) if term) + (
         _EMAIL_RE,
         _URL_RE,
         _PLACEHOLDER_RE,
@@ -537,7 +537,7 @@ def _restore_protected_spans(text: str, protected: dict[str, str]) -> str:
     return value
 
 
-def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: str) -> str:
+def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: str, preserve_terms: list[str] | tuple[str, ...] = ()) -> str:
     """Refine prose line-by-line while copying structural content byte-for-byte.
 
     Extracted DOCX/TXT content often places each original paragraph on its own
@@ -549,7 +549,7 @@ def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: st
     lines = value.splitlines(keepends=True)
     nonempty = [line for line in lines if line.strip()]
     if len(nonempty) <= 1:
-        return value if (not nonempty or _is_protected_line(nonempty[0])) else _refine_paragraph(value, connector_seen, level=level)
+        return value if (not nonempty or _is_protected_line(nonempty[0])) else _refine_paragraph(value, connector_seen, level=level, preserve_terms=preserve_terms)
 
     out: list[str] = []
     for line in lines:
@@ -562,7 +562,7 @@ def _refine_mixed_block(block: str, connector_seen: dict[str, int], *, level: st
         if not core.strip() or _is_protected_line(core):
             out.append(core + ending)
         else:
-            out.append(_refine_paragraph(core, connector_seen, level=level) + ending)
+            out.append(_refine_paragraph(core, connector_seen, level=level, preserve_terms=preserve_terms) + ending)
     return "".join(out)
 
 def _apply_case(source: str, replacement: str) -> str:
@@ -812,10 +812,10 @@ def _break_overloaded_academic_sentence(paragraph: str) -> str:
     return " ".join(out)
 
 
-def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced") -> str:
+def _refine_paragraph(paragraph: str, connector_seen: dict[str, int], *, level: str = "balanced", preserve_terms: list[str] | tuple[str, ...] = ()) -> str:
     """Refine one paragraph with progressively stronger, meaning-safe edits."""
     original_value = paragraph.strip()
-    value, protected = _mask_protected_spans(original_value)
+    value, protected = _mask_protected_spans(original_value, preserve_terms=preserve_terms)
     for pattern, replacement in _LEGACY_ARTIFACT_PATTERNS:
         value = pattern.sub(replacement, value)
     for pattern, replacement in _SAFE_PHRASE_REPLACEMENTS:
@@ -869,7 +869,7 @@ def _signature(text: str) -> dict[str, Any]:
     }
 
 
-def validate_humanizer_preservation(original: str, candidate: str, *, max_word_change_ratio: float = 0.06) -> tuple[bool, list[str]]:
+def validate_humanizer_preservation(original: str, candidate: str, *, max_word_change_ratio: float = 0.06, preserve_terms: list[str] | tuple[str, ...] = ()) -> tuple[bool, list[str]]:
     """Check that a style-only pass preserved core academic content."""
     reasons: list[str] = []
     before = _signature(original)
@@ -877,6 +877,9 @@ def validate_humanizer_preservation(original: str, candidate: str, *, max_word_c
     for key in ("headings", "years", "numbers", "placeholders", "urls", "citation_blocks", "numbered_items", "display_equations", "table_lines", "tabular_lines", "emails", "reference_headings", "equationish", "acronyms", "claim_qualifiers"):
         if before[key] != after[key]:
             reasons.append(f"{key} changed")
+    for term in set(preserve_terms):
+        if term and original.count(term) != candidate.count(term):
+            reasons.append(f"protected term changed: {term}")
 
     original_words = max(1, _word_count(original))
     candidate_words = _word_count(candidate)
@@ -887,7 +890,7 @@ def validate_humanizer_preservation(original: str, candidate: str, *, max_word_c
 
 
 
-def preservation_certificate(original: str, candidate: str) -> dict[str, Any]:
+def preservation_certificate(original: str, candidate: str, *, preserve_terms: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     """Return an explicit protected-content audit for the rewrite UI.
 
     This certificate is intentionally about *protected evidence*, not semantic
@@ -916,6 +919,7 @@ def preservation_certificate(original: str, candidate: str) -> dict[str, Any]:
         "placeholders": before["placeholders"] == after["placeholders"],
         "acronyms": before["acronyms"] == after["acronyms"],
         "claim_qualifiers": before["claim_qualifiers"] == after["claim_qualifiers"],
+        "user_terms": all(original.count(term) == candidate.count(term) for term in preserve_terms if term),
     }
     return {
         "passed": all(checks.values()),
@@ -1080,7 +1084,7 @@ def build_humanizer_batches(text: str, *, max_words: int = 4200) -> list[dict[st
         batches[batch_index]["batch_index"] = batch_index
     return batches
 
-def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], signal_keys: set[str], *, level: str) -> str:
+def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], signal_keys: set[str], *, level: str, preserve_terms: list[str] | tuple[str, ...] = ()) -> str:
     """Signal-guided local pass used only by Engine 3.
 
     It deliberately targets diagnosed A-I style families, while the preservation
@@ -1088,7 +1092,7 @@ def _guided_cleanup_paragraph(paragraph: str, connector_seen: dict[str, int], si
     force-fixed because adding specificity or personal voice could fabricate content.
     """
     original = str(paragraph or "")
-    value, protected = _mask_protected_spans(original.strip())
+    value, protected = _mask_protected_spans(original.strip(), preserve_terms=preserve_terms)
 
     # A/C/F: remove low-information metadiscourse and mechanical transitions.
     if signal_keys & {"A", "C", "F"}:
@@ -1155,7 +1159,7 @@ def _engine3_statistical_targets(detector: dict[str, Any]) -> tuple[list[str], s
             mapped.update(families)
     return targets, mapped
 
-def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep", segments: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any]]:
+def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "deep", segments: list[dict[str, Any]] | None = None, *, preserve_terms: list[str] | tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
     """Engine 3: identify active forensic signals and target them explicitly.
 
     Unlike Engine 1 this engine is detector-coupled by design. It does not invent
@@ -1249,11 +1253,11 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
                 output.append(core + ending)
                 skipped_green_blocks += 1
             else:
-                revised_core = _guided_cleanup_paragraph(core, connector_seen, set(editable), level=level)
+                revised_core = _guided_cleanup_paragraph(core, connector_seen, set(editable), level=level, preserve_terms=preserve_terms)
                 output.append(revised_core + ending)
                 rewritten_flagged_blocks += 1
         candidate = "".join(output).strip()
-        valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=change_limit)
+        valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=change_limit, preserve_terms=preserve_terms)
         if not valid:
             failures.extend(issues)
             continue
@@ -1295,7 +1299,7 @@ def humanize_signal_guided(text: str, detector: dict[str, Any], mode: str = "dee
     return best, report
 
 
-def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dict[str, Any]]:
+def humanize_scholarly_text(text: str, mode: str = "balanced", *, preserve_terms: list[str] | tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
     """Improve scholarly naturalness with preservation-gated local editing.
 
     Engine 1 is intentionally independent from the AI detector. It optimises
@@ -1364,12 +1368,12 @@ def humanize_scholarly_text(text: str, mode: str = "balanced") -> tuple[str, dic
             if reference_tail or _is_protected_block(part):
                 output.append(part)
                 continue
-            output.append(_refine_mixed_block(part, connector_seen, level=level))
+            output.append(_refine_mixed_block(part, connector_seen, level=level, preserve_terms=preserve_terms))
 
         candidate = "".join(output)
         candidate = re.sub(r"[ \t]+\n", "\n", candidate).strip()
         if candidate not in evaluated:
-            valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=local_change_limit)
+            valid, issues = validate_humanizer_preservation(original, candidate, max_word_change_ratio=local_change_limit, preserve_terms=preserve_terms)
             evaluated[candidate] = (valid, issues, analyse_scholarly_style(candidate) if valid else {})
         valid, issues, candidate_report = evaluated[candidate]
         if not valid:

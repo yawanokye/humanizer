@@ -3,81 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Scholarly Humanizer</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.5.0">
+  <title>Natural Voice Constructor</title>
+  <link rel="stylesheet" href="/static/style.css?v=2.6.0">
 </head>
-<body>
+<body class="compact-app">
   <header class="topbar">
-    <div>
-      <p class="eyebrow">Standalone scholarly writing workspace</p>
-      <h1>Scholarly Humanizer</h1>
-      <p class="subtitle">Improve natural scholarly voice while protecting facts, citations, numbers, headings and placeholders.</p>
-    </div>
-    <button id="developerAccessBtn" class="ghost developer-access" type="button" hidden>Developer</button>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">N</span><div><h1>Natural Voice Constructor</h1><p class="subtitle">Clearer writing. Your meaning, protected.</p></div></div>
+    <div class="header-actions"><span id="engineStatus" class="availability-pill">Checking editors…</span><button id="developerAccessBtn" class="ghost developer-access" type="button" hidden>Developer</button></div>
   </header>
-
   <main class="layout">
-    <section class="workspace card">
-      <div class="section-head">
-        <div><h2>Source text</h2><p>Paste text or upload TXT, MD, DOCX or a text-based PDF.</p></div>
-        <label class="upload-button">Upload document<input id="fileInput" type="file" accept=".txt,.md,.docx,.pdf"></label>
-      </div>
-      <textarea id="sourceText" spellcheck="true" placeholder="Paste a chapter, article section, report or scholarly paragraph here."></textarea>
+    <section class="command-bar card" aria-label="Writing controls">
       <div class="controls">
-        <label>Humanisation depth
-          <select id="mode">
-            <option value="light">Light, safe local edits</option>
-            <option value="balanced">Balanced, strong scholarly refinement</option>
-            <option value="deep" selected>Deep, aggressive naturalness refinement</option>
-          </select>
-        </label>
-        <label>Rewrite engine
-          <select id="engine">
-            <option value="engine1" selected>Engine 1, Local rewrite</option>
-            <option id="engine2Option" value="engine2">Engine 2, API rewrite</option>
-            <option value="engine3">Engine 3, Signal-Guided rewrite</option>
-          </select>
-          <input id="useModel" type="checkbox" hidden aria-hidden="true" tabindex="-1">
-        </label>
-        <label id="engine2ModelWrap" class="engine2-setting" hidden>Engine 2 refinement level
-          <select id="engine2Model">
-            <option value="v1">V1 (Light)</option>
-            <option value="v2" selected>V2 (Moderate)</option>
-          </select>
-          <small id="engine2Hint">Select an API refinement level.</small>
-        </label>
-        <button id="analyseBtn" class="secondary">Detect AI</button>
-        <button id="humanizeBtn" class="primary">Humanize scholarly text</button>
-        <button id="clearBtn" class="ghost">Clear and start new</button>
+        <label>Editing depth<select id="mode"><option value="light">Gentle</option><option value="balanced" selected>Balanced</option><option value="deep">Thorough</option></select></label>
+        <label>Editor<select id="engine"><option value="engine1" selected>Local editor</option><option id="engine2Option" value="engine2">Contextual AI editor</option><option value="engine3">Focused style editor</option></select><input id="useModel" type="checkbox" hidden aria-hidden="true" tabindex="-1"></label>
+        <label id="engine2ModelWrap" class="engine2-setting" hidden>AI refinement<select id="engine2Model"><option value="v1">V1 (Light)</option><option value="v2" selected>V2 (Moderate)</option></select><small id="engine2Hint">Choose a refinement level.</small></label>
+        <div class="primary-actions"><button id="analyseBtn" class="secondary" type="button">Analyse source</button><button id="humanizeBtn" class="primary" type="button">Humanise text <span aria-hidden="true">→</span></button></div>
       </div>
+      <details class="writing-options"><summary>Protect specific words or phrases</summary><label for="preserveTerms">Keep these terms unchanged</label><input id="preserveTerms" type="text" maxlength="4000" placeholder="e.g. equilibrium prior, Black-Litterman, financial wellbeing"><small>Separate terms with commas. Spelling and capitalisation are preserved.</small></details>
       <p id="message" class="message" aria-live="polite"></p>
-      <div id="activityProgress" class="activity-progress" role="status" aria-live="polite" aria-atomic="true" hidden>
-        <div id="activityRing" class="activity-ring" style="--activity-angle:0deg">
-          <span id="activityPercent">0%</span>
-        </div>
-        <div class="activity-progress-copy">
-          <strong id="activityTitle">Working</strong>
-          <span id="activityStage">Preparing request…</span>
-        </div>
-      </div>
+      <div id="activityProgress" class="activity-progress" role="status" aria-live="polite" aria-atomic="true" hidden><div id="activityRing" class="activity-ring" style="--activity-angle:0deg"><span id="activityPercent">0%</span></div><div class="activity-progress-copy"><strong id="activityTitle">Working</strong><span id="activityStage">Preparing request…</span></div></div>
     </section>
-
-    <aside class="dashboard card">
-      <div class="section-head compact"><div><h2>AI Detector</h2><p>Section-aware screening of AI-style linguistic, statistical, paragraph and document patterns.</p></div></div>
-      <div class="score-board">
-        <section class="score-strip detector-score">
-          <div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div>
-          <div class="score-track" aria-hidden="true"><i id="aiScoreBar"></i></div>
-          <div class="score-change" id="aiGain"></div>
-        </section>
-        <section class="score-strip humanlike-score">
-          <div class="score-strip-head"><span>Human-like style</span><strong id="humanLikeScore">—</strong></div>
-          <div class="score-track" aria-hidden="true"><i id="humanLikeScoreBar"></i></div>
-          <div class="score-change humanlike-gain" id="humanLikeGain"></div>
-          <small class="score-help">Exact complement of AI Signal. It describes style patterns, not proven authorship.</small>
-        </section>
-      </div>
-      <p id="scoreCoverage" class="score-help" aria-live="polite"></p>
+    <aside class="dashboard card compact-scores" aria-label="Style analysis summary">
+      <div class="score-context"><span id="scoreContext">Source analysis</span><strong id="compactReviewStatus">Ready to analyse</strong></div>
+      <div class="score-board"><section class="score-strip detector-score"><div class="score-strip-head"><span>AI signal index</span><strong id="aiScore">—</strong></div><div class="score-track" aria-hidden="true"><i id="aiScoreBar"></i></div><div class="score-change" id="aiGain"></div></section><section class="score-strip humanlike-score"><div class="score-strip-head"><span>Human-like style</span><strong id="humanLikeScore">—</strong></div><div class="score-track" aria-hidden="true"><i id="humanLikeScoreBar"></i></div><div class="score-change humanlike-gain" id="humanLikeGain"></div></section></div>
+      <p id="scoreCoverage" class="score-help" aria-live="polite">Analyse your text to see assessed-word coverage.</p>
+    </aside>
+    <div class="editor-grid">
+      <section class="workspace card editor-card" aria-label="Source editor">
+        <div class="editor-heading"><div><span class="panel-kicker">ORIGINAL</span><h2>Source text</h2></div><div class="editor-tools"><label class="upload-button">Upload file<input id="fileInput" type="file" accept=".txt,.md,.docx,.pdf"></label><button id="clearBtn" class="ghost" type="button">Clear</button></div></div>
+        <textarea id="sourceText" aria-label="Source text" spellcheck="true" placeholder="Paste your text here, or upload a Word, PDF or text file."></textarea>
+        <div class="editor-footer"><span id="sourceWordCount">0 words</span><span id="sourceScore" class="panel-score">Not analysed</span><span id="sourceFormatHint">TXT · MD · DOCX · PDF</span></div>
+      </section>
+      <section id="revisedPanel" class="card editor-card revised-editor" aria-label="Humanised editor">
+        <div class="editor-heading"><div><span class="panel-kicker">REFINED</span><h2>Humanised text</h2></div><div class="editor-tools"><button id="copyBtn" class="ghost" type="button" disabled>Copy</button><button id="docxBtn" class="secondary" type="button" disabled>Download Word</button></div></div>
+        <textarea id="revisedText" aria-label="Humanised text" spellcheck="true" placeholder="Your revised text appears here. Review it alongside the original."></textarea>
+        <div class="editor-footer"><span id="resultWordCount">0 words</span><span id="resultScore" class="panel-score">Awaiting revision</span><span id="preservationStatus" class="preservation-status">Protected editing</span></div>
+        <div class="result-actions"><button id="useResultBtn" class="ghost" type="button" disabled>Use as source</button><button id="analyseResultBtn" class="ghost" type="button" disabled>Analyse result</button><small id="outputFormatHint">Numbers, citations and document structure are checked.</small></div>
+        <details class="preservation-details"><summary>Content preservation checks</summary><div id="preservationCertificate" class="preservation-certificate empty-state">Checks appear after humanisation.</div></details>
+      </section>
+    </div>
+    <details id="analysisDetails" class="analysis-disclosure card"><summary><span>Detailed analysis</span><span class="summary-hint">Sentence evidence, comparisons and exports</span></summary><div class="analysis-overview">
       <div class="detector-meta">
         <div><small>Signal level</small><strong id="aiVerdict">—</strong></div>
         <div><small>Confidence</small><strong id="aiConfidence">—</strong></div>
@@ -101,17 +66,15 @@
       </div>
       <div class="detector-caution" id="detectorVariability"><strong>Detector variability</strong><span>AI-writing detectors can disagree substantially, especially on formal academic prose. This app combines global and paragraph-level evidence. Use the score as a style-screening indicator, not proof of authorship.</span></div>
       <p class="disclaimer" id="disclaimer">This detector estimates AI-like writing patterns. It does not prove authorship.</p>
-    </aside>
-
+      </div><div class="export-row diagnostic-exports"><button id="annotatedDocxBtn" class="secondary" type="button">Download diagnostic Word</button><button id="htmlBtn" class="secondary" type="button">Download highlighted HTML</button></div>
     <section class="results card full">
       <div class="tabs" role="tablist">
-        <button class="tab active" data-tab="detector">AI signal breakdown</button>
-        <button class="tab" data-tab="highlight">AI red/green map</button>
-        <button class="tab" data-tab="signalcolours">Signal-coloured text</button>
-        <button class="tab" data-tab="statistical">Statistical fingerprint</button>
+        <button class="tab active" data-tab="detector">Signal breakdown</button>
+        <button class="tab" data-tab="highlight">Sentence map</button>
+        <button class="tab" data-tab="signalcolours">Signal families</button>
+        <button class="tab" data-tab="statistical">Statistics</button>
         <button id="calibrationTab" class="tab developer-only" data-tab="calibration" hidden>Calibration & probability</button>
         <button class="tab" data-tab="sections">Section profile</button>
-        <button class="tab" data-tab="revised">Humanized text</button>
         <button class="tab" data-tab="rewriteaudit">Rewrite audit</button>
         <button id="validationTab" class="tab developer-only" data-tab="validation" hidden>Validation Centre</button>
         <button id="benchmarkTab" class="tab developer-only" data-tab="benchmark" hidden>Benchmark Lab</button>
@@ -136,16 +99,6 @@
       <div id="statisticalPanel" class="panel"><div id="statisticalSignals" class="concern-categories empty-state">Run AI detection to inspect the continuous statistical fingerprint.</div></div>
       <div id="calibrationPanel" class="panel"><div id="calibrationDetails" class="calibration-details empty-state">Run AI detection to inspect calibration status, abstention and probability features.</div></div>
       <div id="sectionsPanel" class="panel"><div id="sectionProfile" class="section-profile empty-state">Run AI detection to inspect signal behaviour by scholarly section.</div></div>
-      <div id="revisedPanel" class="panel">
-        <textarea id="revisedText" placeholder="The protected humanized version will appear here."></textarea>
-        <div id="preservationCertificate" class="preservation-certificate empty-state">A protected-content certificate will appear after humanization.</div>
-        <div class="export-row">
-          <button id="copyBtn" class="secondary">Copy text</button>
-          <button id="docxBtn" class="secondary">Export humanized text to Word (.docx)</button>
-          <button id="annotatedDocxBtn" class="secondary">Export diagnostic DOCX</button>
-          <button id="htmlBtn" class="secondary">Export signal-coloured HTML</button>
-        </div>
-      </div>
       <div id="rewriteauditPanel" class="panel"><div id="rewriteAudit" class="rewrite-audit empty-state">Run a humanizer to see the before/after signal map. Engine 3 shows which diagnosed signals it deliberately targeted.</div></div>
       <div id="validationPanel" class="panel"><div id="validationCentre" class="validation-centre empty-state">Enable Benchmark Lab to view calibration and validation metrics.</div></div>
       <div id="benchmarkPanel" class="panel">
@@ -178,7 +131,9 @@
       <div id="findingsPanel" class="panel"><div id="findingsList" class="findings-list empty-state">No sentence evidence yet.</div></div>
       <div id="metricsPanel" class="panel"><div id="metricsTable" class="metrics-table empty-state">No style diagnostics yet.</div></div>
     </section>
+    </details>
+    <footer class="workspace-note">AI signal and Human-like style are complementary style indicators. Scores do not establish authorship.</footer>
   </main>
-  <script src="/static/app.js?v=2.5.0"></script>
+  <script src="/static/app.js?v=2.6.0"></script>
 </body>
 </html>
