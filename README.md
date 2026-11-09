@@ -1,5 +1,13 @@
 # Scholarly Humanizer, Render-ready standalone app
 
+## Configured GPT-6.1 Sol support, v2.6.1
+
+Contextual AI now uses `OPENAI_MODEL` by default, with `gpt-6.1-sol` as the fallback model when no model is specified. Both plain-text and format-preserving Word processing honour the deployment model. The selector shows the configured model and retains V1/V2 as explicit legacy choices. Old browser defaults no longer silently override the deployment model.
+
+The public capability check reports the configured model and missing configuration names without exposing credentials. A failed status request is distinguished from absent configuration. Gentle editing remains local, while Balanced and Thorough can use the API. Batch failures and preservation fallbacks are reported without claiming that API refinement completed successfully.
+
+GPT-6.1 Sol uses the existing Responses API path with low reasoning for Balanced and medium for Thorough. No unsupported sampling parameters are sent. Existing evidence and protected-term checks remain active.
+
 ## Compact Natural Voice Constructor workspace, v2.6.0
 
 The source and humanised editors now remain side by side on desktop and stack on narrow screens. Editing depth, editor selection and the main actions share one compact toolbar. The AI signal index and Human-like style appear in a small score strip. Sentence maps, signal breakdowns, before/after audits and developer tools remain available under **Detailed analysis**, collapsed by default.
@@ -57,7 +65,7 @@ The AI Detector is deliberately sensitive to clusters of formulaic, repetitive, 
 ## Rewrite engines
 
 - **Engine 1, Local rewrite:** default deterministic editor. It needs no OpenAI key and does not send text to an external model. Deep mode is now aggressive on editable prose cadence while names, emails, numbers, percentages, citations, references, tables, headings, equations and other evidence-bearing spans are locked. The engine can remove formulaic phrasing, repeated connectors and safe overloaded sentence joins without changing the protected content.
-- **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-terra`, and the API base URL. Add the secret `OPENAI_API_KEY` during deployment. If the key is missing, the app now states that Engine 1 fallback was used instead of reporting an unchanged Engine 2 rewrite. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers internal rewrite quality.
+- **Engine 2, API rewrite:** OpenAI-ready API pass. The Render blueprint sets `HUMANIZER_PROVIDER=openai`, `OPENAI_MODEL=gpt-6.1-sol`, and the API base URL. Add the secret `OPENAI_API_KEY` during deployment. If the key is missing, the app now states that Engine 1 fallback was used instead of reporting an unchanged Engine 2 rewrite. The app applies preservation checks and falls back to Engine 1 output if the API changes protected content or lowers internal rewrite quality.
 
 ## Deploy to Render with Blueprint
 
@@ -83,7 +91,7 @@ The server binds to `0.0.0.0` and uses Render's `PORT` environment variable auto
 
 ## Engine 2 selection and model choice
 
-Engine 2 is always selectable in the browser. The UI no longer disables it when the API key is missing or while the status request is loading. When Engine 2 is selected, a second selector appears for **GPT-5.6 Terra** or **GPT-5.6 Luna**. Terra is the default quality/cost balance; Luna is the lower-cost high-volume option. The chosen model is sent with each humanization request and does not require changing the Render environment variable between runs. If `OPENAI_API_KEY` is missing, the UI keeps Engine 2 selectable but explains that API rewriting cannot run until the secret is configured.
+Engine 2 is always selectable in the browser. The default model choice honours `OPENAI_MODEL`, normally GPT-6.1 Sol. Explicit legacy V1 and V2 choices remain available. If `OPENAI_API_KEY` is missing, the UI keeps Engine 2 selectable and explains that it will use local editing. The deployment status does not establish that the key has valid model access, so confirm access with a short rewrite after configuration.
 
 ## Engine 2 API rewrite on Render
 
@@ -92,11 +100,11 @@ The included Render blueprint preconfigures Engine 2 for OpenAI. Engine 1 still 
 ```text
 HUMANIZER_PROVIDER=openai
 OPENAI_API_KEY=sk-your-secret-key
-OPENAI_MODEL=gpt-5.6-terra
+OPENAI_MODEL=gpt-6.1-sol
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-Mark `OPENAI_API_KEY` as a secret. Do not commit it to the repository. `OPENAI_MODEL` defaults to `gpt-5.6-terra` if omitted. Use `gpt-5.6-luna` when lower cost and higher-volume processing matter more than maximum rewrite quality. `OPENAI_BASE_URL` is optional because the app defaults to `https://api.openai.com/v1` when `HUMANIZER_PROVIDER=openai`. The official OpenAI path uses the Responses API.
+Mark `OPENAI_API_KEY` as a secret. Do not commit it to the repository. `OPENAI_MODEL` defaults to `gpt-6.1-sol` if omitted. Use `gpt-5.6-luna` when lower cost and higher-volume processing matter more than maximum rewrite quality. `OPENAI_BASE_URL` is optional because the app defaults to `https://api.openai.com/v1` when `HUMANIZER_PROVIDER=openai`. The official OpenAI path uses the Responses API.
 
 For another OpenAI-compatible provider, the existing `HUMANIZER_MODEL`, `HUMANIZER_BASE_URL`, and `HUMANIZER_API_KEY` variables remain supported.
 
@@ -160,7 +168,7 @@ If a browser shows `Cannot read properties of null (reading 'checked')`, it is l
 - The headline AI Signal now uses four independent layers: **25% forensic A–I evidence, 35% continuous statistical fingerprint, 30% paragraph profile and 10% document regularity**. When several layers are simultaneously elevated, a small corroboration bonus prevents strong multi-layer evidence from being diluted by averaging.
 - The statistical fingerprint exposes continuous local metrics for predictability/perplexity proxy, burstiness, token-distribution proxy, repeated n-grams, semantic-density uniformity, repeated syntactic structures, transition concentration and vocabulary diversity. The perplexity/token fields are explicitly labelled proxies in this lightweight deployment because no reference language model is bundled into the Render image.
 - **Engine 1 remains detector-independent.** It improves natural scholarly prose without reading the A–I scores.
-- **Engine 2 remains the optional API engine** with Terra/Luna selection and the same preservation checks.
+- **Engine 2 remains the optional API engine** with deployment-model selection and the same preservation checks.
 - **Engine 3, Signal-Guided rewrite** reads the active A–I detector families and explicitly targets safely editable signals. E (specificity) and H (voice/register) are diagnostic-only when fixing them would require inventing detail or personal voice. Engine 3 reports the targeted A–I score before and after its rewrite.
 - Added a **Signal-coloured text** tab. Flagged sentences carry A–I badges and category-specific colours, and clicking a sentence shows the evidence that fired.
 - The coloured HTML export now uses the A–I category colours rather than only generic red/orange/yellow risk bands.

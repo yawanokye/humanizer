@@ -13,7 +13,7 @@ services:
       - key: HUMANIZER_PROVIDER
         value: openai
       - key: OPENAI_MODEL
-        value: gpt-5.6-terra
+        value: gpt-6.1-sol
       - key: OPENAI_BASE_URL
         value: https://api.openai.com/v1
       - key: OPENAI_API_KEY

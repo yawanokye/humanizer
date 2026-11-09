@@ -37,8 +37,8 @@ class RefinerConfig:
         # Generic HUMANIZER_* names remain supported for backward compatibility
         # and for other OpenAI-compatible providers.
         if provider == "openai":
-            model = (os.getenv("OPENAI_MODEL") or os.getenv("HUMANIZER_MODEL") or "gpt-5.6-terra").strip()
-            base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            model = (os.getenv("OPENAI_MODEL", "").strip() or os.getenv("HUMANIZER_MODEL", "").strip() or "gpt-6.1-sol")
+            base_url = (os.getenv("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
             api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("HUMANIZER_API_KEY", "")).strip()
         elif provider == "ollama":
             model = os.getenv("HUMANIZER_MODEL", "").strip()
@@ -72,17 +72,18 @@ ENGINE2_MODEL_PUBLIC_LABELS = {
 }
 
 def resolve_engine2_model(value: str | None, default_model: str) -> tuple[str, str]:
-    """Resolve the public Engine 2 alias without exposing provider model names in the UI/API."""
+    """Use the deployment model by default and retain explicit legacy choices."""
     raw = str(value or "").strip()
+    if raw in {"", "configured"}:
+        return default_model, "configured"
+    if raw == "gpt-6.1-sol":
+        return raw, raw
     if raw in ENGINE2_MODEL_ALIASES:
         return ENGINE2_MODEL_ALIASES[raw], raw
     # Backward compatibility for saved clients from v2.3 and earlier.
     reverse = {model: alias for alias, model in ENGINE2_MODEL_ALIASES.items()}
     if raw in reverse:
         return raw, reverse[raw]
-    if not raw:
-        alias = reverse.get(default_model, "v2")
-        return ENGINE2_MODEL_ALIASES.get(alias, default_model), alias
     raise RefinerError("Unsupported Engine 2 refinement level.")
 
 
@@ -128,7 +129,7 @@ def provider_status(config: RefinerConfig | None = None) -> dict[str, Any]:
                 "uses_external_api": True,
                 "provider": cfg.provider,
                 "model": cfg.model,
-                "supported_models": ["gpt-5.6-terra", "gpt-5.6-luna"] if cfg.provider == "openai" else [],
+                "supported_models": list(dict.fromkeys([cfg.model, "gpt-6.1-sol", *ENGINE2_MODEL_ALIASES.values()])) if cfg.provider == "openai" else [],
                 "message": engine_2_message,
             },
         },
@@ -179,7 +180,7 @@ def _system_prompt(mode: str = "balanced") -> str:
 
 
 def _refine_openai(text: str, config: RefinerConfig, mode: str = "balanced", *, context_before: str = "", context_after: str = "") -> str:
-    """Refine with OpenAI's Responses API, recommended for GPT-5.6."""
+    """Refine with OpenAI's Responses API using the resolved deployment model."""
     payload = {
         "model": config.model,
         "reasoning": {"effort": "medium" if mode == "deep" else "low"},
@@ -383,6 +384,7 @@ def refine_with_model(
         "engine": "engine2",
         "label": "Engine 2, API rewrite",
         "level": public_level,
+        "model": cfg.model,
         "batches": batch_reports,
         "batch_count": len(batch_reports),
         "failed_batches": failures,
@@ -577,7 +579,7 @@ def refine_paragraphs_with_model(
     progress_callback(100, "Engine 2 format-preserving Word refinement finished…")
     return revised, {
         "applied": any(revised[key] != originals[key] for key in originals),
-        "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level,
+        "engine": "engine2", "label": "Engine 2, API rewrite", "level": public_level, "model": cfg.model,
         "batches": batch_reports, "batch_count": len(batch_reports), "failed_batches": failures,
         "parallelism": min(parallelism, max(1, len(groups))), "batch_target_words": batch_words,
         "total_words": total_words, "batch_retries": retries, "section_aware": True,

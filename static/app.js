@@ -656,7 +656,7 @@ async function humanize() {
   busy(true, 'Applying protected scholarly refinement…');
   startActivity('humanize', 'Humanize scholarly text', 'Submitting protected rewrite job…');
   try {
-    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'v2',document_id:currentDocumentId,preserve_terms:protectedTerms()})});
+    const startResponse = await api('/api/humanize/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,mode:$('mode')?.value || 'balanced',engine:$('engine')?.value || 'engine1',engine2_model:$('engine2Model')?.value || 'configured',document_id:currentDocumentId,preserve_terms:protectedTerms()})});
     const started = await startResponse.json();
     if (!started.job_id) throw new Error('Humanization job could not be started.');
     setActivityProgress(Number(started.progress ?? 2), started.stage || 'Queued for humanization…');
@@ -687,7 +687,17 @@ async function humanize() {
     renderRewriteAudit(data);
     activateTab('revised');
     const outcome = data.changed ? 'Humanisation completed.' : 'No safe rewrite changes were made.';
-    const editorLabel = data.actual_engine === 'engine1_fallback' ? ' Local editor used because contextual AI is not configured.' : data.selected_engine === 'engine3' ? ' Focused style edit completed.' : data.selected_engine === 'engine2' ? ' Contextual AI edit completed.' : ' Local edit completed.';
+    const apiReport = data.engine_2 || {};
+    let editorLabel = data.selected_engine === 'engine3' ? ' Focused style edit completed.' : ' Local edit completed.';
+    if (data.selected_engine === 'engine2') {
+      editorLabel = data.actual_engine === 'engine1_fallback'
+        ? ` Local editing retained. ${apiReport.reason || 'API refinement was not applied.'}`
+        : Number(apiReport.failed_batches || 0) > 0
+          ? ' API refinement could not complete every batch. Checked local text was retained where needed.'
+          : Number(apiReport.batch_count || 0) === 0
+            ? ' No API refinement was needed for this passage.'
+            : ' Contextual AI processing completed.';
+    }
     setMessage(`${outcome}${editorLabel}${data.format_preserving_export ? ' Word layout preserved.' : ''} Review both versions side by side.`, data.changed ? 'success' : '');
     completeActivity(data.changed ? 'Humanization completed' : 'Completed with no safe changes');
   } catch(e) {
@@ -807,6 +817,7 @@ const legacyUseModel = $('useModel');
 const engineSelect = $('engine');
 const engine2ModelSelect = $('engine2Model');
 let engine2Configured = false;
+let engine2Status = 'loading';
 
 function syncEngineControls() {
   const usingEngine2 = engineSelect?.value === 'engine2';
@@ -816,25 +827,29 @@ function syncEngineControls() {
   if (engine2ModelSelect) engine2ModelSelect.disabled = false;
   const hint = $('engine2Hint');
   if (hint && usingEngine2) {
-    hint.textContent = engine2Configured
-      ? 'V1 for light refinement. V2 for a stronger contextual edit.'
-      : 'Contextual AI is not configured. The local editor will be used.';
+    hint.textContent = engine2Status === 'loading' ? 'Checking contextual AI configuration…'
+      : engine2Status === 'unknown' ? 'The configuration check is unavailable. Rewriting will use the server settings.'
+      : !engine2Configured ? 'Contextual AI is unavailable on this deployment. The local editor will be used.'
+      : $('mode')?.value === 'light' ? 'Gentle uses local edits. Choose Balanced or Thorough for AI refinement.'
+      : engine2ModelSelect?.value === 'configured' ? 'Uses the configured model. Numbers, citations and protected terms are checked.'
+      : 'An explicit legacy model is selected instead of the deployment model.';
   }
   try {
     if (engineSelect) localStorage.setItem('humanizer_engine', engineSelect.value);
-    if (engine2ModelSelect) localStorage.setItem('humanizer_engine2_model', engine2ModelSelect.value);
+    if (engine2ModelSelect) localStorage.setItem('humanizer_api_model_choice', engine2ModelSelect.value);
   } catch (_) {}
 }
 
 try {
   const savedEngine = localStorage.getItem('humanizer_engine');
-  const savedModel = localStorage.getItem('humanizer_engine2_model');
+  const savedModel = localStorage.getItem('humanizer_api_model_choice');
   if (engineSelect && ['engine1','engine2','engine3'].includes(savedEngine)) engineSelect.value = savedEngine;
-  if (engine2ModelSelect && ['v1','v2'].includes(savedModel)) engine2ModelSelect.value = savedModel;
+  if (engine2ModelSelect && ['configured','v1','v2'].includes(savedModel)) engine2ModelSelect.value = savedModel;
 } catch (_) {}
 
 if (engineSelect) engineSelect.addEventListener('change', syncEngineControls);
 if (engine2ModelSelect) engine2ModelSelect.addEventListener('change', syncEngineControls);
+$('mode')?.addEventListener('change', syncEngineControls);
 syncEngineControls();
 
 $('analyseBtn')?.addEventListener('click',analyse);
@@ -957,19 +972,23 @@ fetch('/api/status').then(r=>r.json()).then(data=>{
   if (developerButton) developerButton.hidden=!Boolean(data.developer_lab_available);
   const engine2 = data.engines?.engine2;
   engine2Configured = Boolean(engine2?.configured);
+  engine2Status = engine2Configured ? 'configured' : 'unconfigured';
+  const modelOption = $('configuredModelOption');
+  if (modelOption) modelOption.textContent = engine2?.model === 'gpt-6.1-sol' ? 'GPT-6.1 Sol (configured)' : engine2?.model ? `${engine2.model} (configured)` : 'Configured model';
   const opt = $('engine2Option');
   if (opt) {
     opt.disabled = false;
     opt.textContent = 'Contextual AI editor';
   }
   syncEngineControls();
-  if ($('engineStatus')) $('engineStatus').textContent = engine2Configured ? 'Contextual AI ready' : 'Local editors ready';
+  if ($('engineStatus')) $('engineStatus').textContent = engine2Configured ? 'Contextual AI configured' : 'Local editors ready';
 }).catch(()=>{
   engine2Configured = false;
+  engine2Status = 'unknown';
   const opt = $('engine2Option');
   if (opt) { opt.disabled = false; opt.textContent='Contextual AI editor'; }
   syncEngineControls();
-  if ($('engineStatus')) $('engineStatus').textContent='Local editors ready';
+  if ($('engineStatus')) $('engineStatus').textContent='Editor status unavailable';
 });
 
 $('sourceText')?.addEventListener('input', () => {

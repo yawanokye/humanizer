@@ -62,14 +62,14 @@ class ScholarlyHumanizerTests(unittest.TestCase):
             self.assertTrue(provider_status(config)["configured"])
 
 
-    def test_openai_defaults_to_terra(self) -> None:
+    def test_openai_defaults_to_sol(self) -> None:
         env = {
             "HUMANIZER_PROVIDER": "openai",
             "OPENAI_API_KEY": "test-key",
         }
         with patch.dict(os.environ, env, clear=True):
             config = RefinerConfig.from_env()
-            self.assertEqual(config.model, "gpt-5.6-terra")
+            self.assertEqual(config.model, "gpt-6.1-sol")
             self.assertTrue(provider_status(config)["configured"])
 
     def test_openai_allows_luna_override(self) -> None:
@@ -95,7 +95,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         js = (root / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('/static/app.js?v=2.6.1', html)
+        self.assertIn('/static/app.js?v=2.6.2', html)
         self.assertIn('/static/style.css?v=2.6.1', html)
         self.assertIn('id="useModel"', html)
         self.assertNotIn("$('useModel').checked", js)
@@ -159,7 +159,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         render = (root / "render.yaml").read_text(encoding="utf-8")
         self.assertIn("HUMANIZER_PROVIDER\n        value: openai", render)
-        self.assertIn("OPENAI_MODEL\n        value: gpt-5.6-terra", render)
+        self.assertIn("OPENAI_MODEL\n        value: gpt-6.1-sol", render)
         self.assertIn("OPENAI_API_KEY\n        sync: false", render)
 
     def test_frontend_shows_complementary_ai_and_humanlike_meters(self) -> None:
@@ -246,7 +246,7 @@ class ScholarlyHumanizerTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
             config = RefinerConfig.from_env()
             self.assertEqual(config.provider, "openai")
-            self.assertEqual(config.model, "gpt-5.6-terra")
+            self.assertEqual(config.model, "gpt-6.1-sol")
             self.assertTrue(provider_status(config)["configured"])
 
     def test_provider_status_identifies_missing_openai_key(self) -> None:
@@ -623,7 +623,8 @@ The evidence supports continued attention to data quality."""
         root = Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('value="v1">V1 (Light)', html)
-        self.assertIn('value="v2" selected>V2 (Moderate)', html)
+        self.assertIn('value="v2">V2 (Moderate)', html)
+        self.assertIn('value="configured" selected', html)
         self.assertNotIn('GPT-5.6 Terra, recommended', html)
         self.assertNotIn('GPT-5.6 Luna, economy', html)
 

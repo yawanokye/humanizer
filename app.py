@@ -35,7 +35,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(
     title="Natural Voice Constructor",
-    version="2.6.0",
+    version="2.6.1",
     description="Format-preserving scholarly humanization and AI-style screening with protected DOCX patching, large-document jobs, private calibration, signal-coloured diagnostics, independent Engine 1, API Engine 2, and signal-guided Engine 3.",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -124,7 +124,7 @@ class TextRequest(BaseModel):
 class HumanizeRequest(TextRequest):
     mode: Literal["light", "balanced", "deep"] = "balanced"
     engine: Literal["engine1", "engine2", "engine3"] = "engine1"
-    engine2_model: Literal["v1", "v2", "gpt-5.6-terra", "gpt-5.6-luna"] = "v2"
+    engine2_model: Literal["configured", "gpt-6.1-sol", "v1", "v2", "gpt-5.6-terra", "gpt-5.6-luna"] = "configured"
     document_id: str | None = None
     # Backward-compatible field for older frontends. New UI uses engine.
     use_model: bool = False
@@ -226,7 +226,7 @@ def status() -> dict:
         "version": app.version,
         "engines": {
             "engine1": {"configured": True, "label": "Engine 1, Local rewrite"},
-            "engine2": {"configured": configured, "label": "Engine 2, API rewrite"},
+            "engine2": {"configured": configured, "label": "Engine 2, API rewrite", "model": provider.get("model", ""), "configuration_missing": provider.get("missing", [])},
             "engine3": {"configured": True, "label": "Engine 3, Signal-Guided rewrite"},
         },
         "max_input_chars": MAX_INPUT_CHARS,
