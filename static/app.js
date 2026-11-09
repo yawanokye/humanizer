@@ -151,9 +151,16 @@ function updateDashboard(report, comparison = null) {
   const ai = Number(report.ai_detection_percentage ?? 0);
   const humanLike = Number(report.human_like_style_percentage ?? (100 - ai));
   const detector = report.ai_detector || {};
+  const scoreAvailable = report.score_available !== false;
 
-  if ($('aiScore')) $('aiScore').textContent = `${ai}%`;
-  if ($('humanLikeScore')) $('humanLikeScore').textContent = `${humanLike}%`;
+  if ($('aiScore')) $('aiScore').textContent = scoreAvailable ? `${ai}%` : '—';
+  if ($('humanLikeScore')) $('humanLikeScore').textContent = scoreAvailable ? `${humanLike}%` : '—';
+  if ($('scoreCoverage')) {
+    const coverage = report.analysis_coverage;
+    $('scoreCoverage').textContent = coverage
+      ? `${Number(coverage.assessed_words).toLocaleString()} of ${Number(coverage.total_words).toLocaleString()} words assessed · ${Number(coverage.assessed_paragraphs).toLocaleString()} prose paragraphs${report.sufficient_prose === false ? ' · provisional result' : ''}`
+      : '';
+  }
   if (!comparison && $('humanLikeGain')) $('humanLikeGain').textContent = '';
   if (!comparison && $('aiGain')) $('aiGain').textContent = '';
   if ($('aiVerdict')) $('aiVerdict').textContent = detector.verdict || report.ai_verdict || '—';
@@ -169,8 +176,8 @@ function updateDashboard(report, comparison = null) {
   if ($('flaggedSegments')) $('flaggedSegments').textContent = report.flagged_prose_segments ?? detector.flagged_segment_count ?? 0;
   if ($('statisticalFingerprint')) $('statisticalFingerprint').textContent = `${Number(report.statistical_fingerprint_percentage ?? detector.statistical_fingerprint_percentage ?? 0)}%`;
   if ($('engineSignalTarget')) { const active=(detector.signals||[]).filter(x=>Number(x.score||0)>0).map(x=>x.key); $('engineSignalTarget').textContent=active.length ? active.join(', ') : 'None'; }
-  if ($('aiScoreBar')) $('aiScoreBar').style.width = `${Math.max(0, Math.min(100, ai))}%`;
-  if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${Math.max(0, Math.min(100, humanLike))}%`;
+  if ($('aiScoreBar')) $('aiScoreBar').style.width = `${scoreAvailable ? Math.max(0, Math.min(100, ai)) : 0}%`;
+  if ($('humanLikeScoreBar')) $('humanLikeScoreBar').style.width = `${scoreAvailable ? Math.max(0, Math.min(100, humanLike)) : 0}%`;
   if (comparison?.ai && $('aiGain')) {
     const reduction = Number(comparison.ai.reduction ?? 0);
     $('aiGain').textContent = reduction > 0 ? `▼ ${reduction} points after rewrite` : reduction < 0 ? `▲ ${Math.abs(reduction)} points after rewrite` : 'no change after rewrite';

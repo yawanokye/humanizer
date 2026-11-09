@@ -167,9 +167,13 @@ def _system_prompt(mode: str = "balanced") -> str:
         "You are a preservation-gated scholarly style editor. Improve natural scholarly voice, flow, rhythm, specificity, and sentence variety. "
         + depth + " "
         "Do not insert typos, slang, fake uncertainty, invented examples or unsupported claims. "
+        "Preserve negation, uncertainty, comparisons, conditional limits and the distinction between an aim and a completed result. "
+        "Keep precise technical terms such as equilibrium prior intact. Improve the surrounding construction instead of substituting vague synonyms. "
+        "Build a direct subject and verb where possible. Keep useful qualifications and let sentence length follow the argument, without forcing a rhythm quota. "
         "Treat names, emails, dates, numbers, percentages, citations, references, URLs, DOIs, equations, tables, table headers, figure captions, headings, tickers and statistical notation as locked content. "
         "You may rewrite prose around those items, but do not alter, omit, invent, reorder or relabel any locked item. "
         "When DOCX paragraph markers such as <<<P:12>>> and <<<ENDP:12>>> are present, keep every marker exactly unchanged and in the same order. Do not merge or split marked paragraphs. "
+        "Paragraph IDs can have gaps because satisfactory prose was skipped. Do not treat separate marked paragraphs as adjacent sentences or infer missing links between them. "
         "Return only the revised passage. Never add analysis or markdown fences.\n\nRules:\n" + rules
     )
 
@@ -237,6 +241,16 @@ def _refine_ollama(text: str, config: RefinerConfig, mode: str = "balanced", *, 
         raise RefinerError("Ollama returned an unexpected response.") from exc
 
 
+def _needs_model_edit(report: dict[str, Any], mode: str) -> bool:
+    """Spend model calls on actionable prose issues, not rhythm quotas alone."""
+    if mode == "deep":
+        return True
+    return any(int(report.get(key) or 0) > 0 for key in (
+        "generic_phrase_hits", "repeated_sentence_openings", "repeated_paragraph_openings",
+        "long_sentence_count", "overloaded_sentence_count", "repeated_frame_density",
+    )) or int(report.get("generic_connector_hits") or 0) > 2
+
+
 def refine_with_model(
     text: str,
     *,
@@ -278,9 +292,9 @@ def refine_with_model(
         if batch.get("protected"):
             return index, batch_text, {"index": index, "protected": True, "applied": False, "word_count": int(batch.get("word_count") or 0), "section_heading": batch.get("section_heading", "")}
         score = int((batch.get("diagnostic") or {}).get("naturalness_score", 0))
-        should_refine = mode == "deep" or score < 92
+        should_refine = _needs_model_edit(batch.get("diagnostic") or {}, mode)
         if not should_refine:
-            return index, batch_text, {"index": index, "protected": False, "applied": False, "score": score, "word_count": int(batch.get("word_count") or 0), "section_heading": batch.get("section_heading", ""), "reason": "Already above selective threshold"}
+            return index, batch_text, {"index": index, "protected": False, "applied": False, "score": score, "word_count": int(batch.get("word_count") or 0), "section_heading": batch.get("section_heading", ""), "reason": "No actionable prose issue required model editing."}
 
         last_error = ""
         for attempt in range(1, retries + 2):
@@ -303,7 +317,7 @@ def refine_with_model(
                     if attempt <= retries:
                         continue
                     return index, batch_text, {"index": index, "applied": False, "score_before": score, "score_after": score, "naturalness_gain": 0, "preservation_issues": issues, "word_count": int(batch.get("word_count") or 0), "section_heading": batch.get("section_heading", ""), "attempts": attempt, "fallback_retained": True}
-                candidate_score = int(analyse_scholarly_style(candidate).get("naturalness_score", 0))
+                candidate_score = score if candidate == batch_text else int(analyse_scholarly_style(candidate).get("naturalness_score", 0))
                 if candidate_score < score:
                     last_error = "API candidate reduced naturalness."
                     if attempt <= retries:
@@ -436,7 +450,17 @@ def refine_paragraphs_with_model(
     groups: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_words = 0
+    source_scores: dict[int, int] = {}
+    skipped: dict[int, str] = {}
     for item in paragraphs:
+        pid = int(item["paragraph_index"])
+        diagnostic = analyse_scholarly_style(originals[pid])
+        source_scores[pid] = int(diagnostic.get("naturalness_score", 0))
+        if not _needs_model_edit(diagnostic, mode):
+            # Stable paragraph IDs keep skipped neighbours untouched while
+            # batching the remaining targets avoids a request per small edit.
+            skipped[pid] = originals[pid]
+            continue
         words = max(1, len(str(item.get("text") or "").split()))
         if current and current_words + words > batch_words:
             groups.append(current)
@@ -480,8 +504,8 @@ def refine_paragraphs_with_model(
                     proposed = str(parsed.get(pid, source_text))
                     paragraph_limit = max(max_ratio, 0.35 if len(source_text.split()) < 120 else max_ratio)
                     valid, issues = validate_humanizer_preservation(source_text, proposed, max_word_change_ratio=paragraph_limit)
-                    source_score = int(analyse_scholarly_style(source_text).get("naturalness_score", 0))
-                    proposed_score = int(analyse_scholarly_style(proposed).get("naturalness_score", 0)) if valid else source_score
+                    source_score = source_scores[pid]
+                    proposed_score = int(analyse_scholarly_style(proposed).get("naturalness_score", 0)) if valid and proposed != source_text else source_score
                     if not valid or proposed_score < source_score:
                         accepted[pid] = source_text
                         rejected += 1
@@ -510,7 +534,8 @@ def refine_paragraphs_with_model(
 
     results: dict[int, tuple[dict[int, str], dict[str, Any]]] = {}
     completed = 0
-    completed_words = 0
+    skipped_words = sum(len(value.split()) for value in skipped.values())
+    completed_words = skipped_words
 
     def record(index: int, mapping: dict[int, str], report: dict[str, Any]) -> None:
         nonlocal completed, completed_words
@@ -525,7 +550,7 @@ def refine_paragraphs_with_model(
         checkpoint_callback({
             "completed_batches": completed, "total_batches": len(groups),
             "completed_words": completed_words, "total_words": total_words,
-            "format_preserving_docx": True, "completed_paragraphs": sum(len(mapping) for mapping, _ in results.values()),
+            "format_preserving_docx": True, "completed_paragraphs": len(skipped) + sum(len(mapping) for mapping, _ in results.values()),
             "partial_paragraphs": partial,
         })
 
@@ -555,4 +580,6 @@ def refine_paragraphs_with_model(
         "parallelism": min(parallelism, max(1, len(groups))), "batch_target_words": batch_words,
         "total_words": total_words, "batch_retries": retries, "section_aware": True,
         "context_continuity": True, "format_preserving_docx": True,
+        "selective_processing": mode != "deep", "skipped_paragraphs": len(skipped),
+        "skipped_words": skipped_words, "model_words": total_words - skipped_words,
     }

@@ -16,6 +16,7 @@ AI_VOCAB = (
     "in the realm of", "the landscape of", "a myriad of", "a plethora of", "it is worth noting",
     "it is important to note",
 )
+_AI_VOCAB_RE = re.compile(r"\b(?:" + "|".join(re.escape(item) for item in sorted(AI_VOCAB, key=len, reverse=True)) + r")\b", re.I)
 HEDGE_PATTERNS = (
     r"\boften\b", r"\bgenerally\b", r"\btypically\b", r"\bin many cases\b", r"\bit can be argued\b",
     r"\bit is important to note(?: that)?\b", r"\bit is worth mentioning\b", r"\bone might consider\b",
@@ -423,7 +424,17 @@ def _percentile(values: list[int], q: float) -> int:
     return round(ordered[lo] * (1 - frac) + ordered[hi] * frac)
 
 
-def _segment_style_risk(paragraph: str, academic: bool = True) -> tuple[int, list[str]]:
+def score_sentence_cached(sentence: str, academic: bool, cache: dict | None = None) -> tuple[int, list[str]]:
+    """Reuse sentence diagnostics within one request, without retaining user text."""
+    key = (sentence.strip(), academic)
+    if cache is None:
+        return sentence_ai_signal(key[0], academic=academic)
+    if key not in cache:
+        cache[key] = sentence_ai_signal(key[0], academic=academic)
+    return cache[key]
+
+
+def _segment_style_risk(paragraph: str, academic: bool = True, *, sentence_cache: dict | None = None) -> tuple[int, list[str]]:
     """Independent paragraph-level style screen.
 
     This deliberately does not use the humanizer's naturalness score. It blends
@@ -433,7 +444,7 @@ def _segment_style_risk(paragraph: str, academic: bool = True) -> tuple[int, lis
     sentences = [s for s in _sentences(paragraph) if _is_prose_sentence(s)]
     if not sentences:
         sentences = _sentences(paragraph)
-    local = [sentence_ai_signal(s, academic=academic)[0] for s in sentences]
+    local = [score_sentence_cached(s, academic, sentence_cache)[0] for s in sentences]
     reasons: list[str] = []
     peak = max(local, default=0)
     mean = sum(local) / max(1, len(local))
@@ -491,7 +502,7 @@ def _humanness_counter_evidence(text: str, prose_sentences: list[str], academic:
     return _score(ev), ev
 
 
-def ai_check_report(text: str, global_report: dict[str, Any] | None = None, academic: bool = True) -> dict[str, Any]:
+def ai_check_report(text: str, global_report: dict[str, Any] | None = None, academic: bool = True, *, sentence_cache: dict | None = None) -> dict[str, Any]:
     raw = str(text or "")
     prose_sentences = _prose_sentences_from_text(raw)
     if not prose_sentences:
@@ -514,13 +525,8 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
 
     # A. Perplexity / predictability proxy
     ev: list[dict[str, str]] = []
-    low = prose_text.lower()
-    vocab_hits: list[str] = []
-    for item in AI_VOCAB:
-        if academic and item in {"robust", "comprehensive"}:
-            continue
-        count = low.count(item)
-        vocab_hits.extend([item] * count)
+    vocab_hits = [match.group(0).lower() for match in _AI_VOCAB_RE.finditer(prose_text)
+                  if not (academic and match.group(0).lower() in {"robust", "comprehensive"})]
     vocab_density = len(vocab_hits) / max(1, wc) * 1000
     if vocab_hits and (len(set(vocab_hits)) >= 2 or vocab_density >= 2.5):
         unique = list(dict.fromkeys(vocab_hits))
@@ -705,11 +711,11 @@ def ai_check_report(text: str, global_report: dict[str, Any] | None = None, acad
     # Independent local profile. Humanness counter-evidence does NOT erase style
     # evidence. It is used to qualify confidence only, because a technically exact
     # manuscript can still contain AI-assisted prose around genuine results.
-    sentence_risks = [sentence_ai_signal(sentence, academic=academic)[0] for sentence in prose_sentences]
+    sentence_risks = [score_sentence_cached(sentence, academic, sentence_cache)[0] for sentence in prose_sentences]
     segment_profile: list[dict[str, Any]] = []
     segment_scores: list[int] = []
-    for index, paragraph in enumerate(paragraphs[:120]):
-        local_pct, local_reasons = _segment_style_risk(paragraph, academic=academic)
+    for index, paragraph in enumerate(paragraphs):
+        local_pct, local_reasons = _segment_style_risk(paragraph, academic=academic, sentence_cache=sentence_cache)
         segment_scores.append(local_pct)
         segment_profile.append({
             "segment": index + 1,
